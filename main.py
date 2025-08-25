@@ -1,3 +1,28 @@
+# --- добавьте в самый верх main.py ---
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # простой healthcheck на /healthz
+        if self.path == "/healthz":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Ahla-bot is running")
+
+def keepalive_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+threading.Thread(target=keepalive_server, daemon=True).start()
+# --- дальше ваш код как был (инициализация бота и т.д.) ---
+
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from deep_translator import GoogleTranslator
@@ -34,12 +59,41 @@ saved_explanations = {}
 saved_audio = {}
 
 # ======= Firebase =======
-FIREBASE_CRED_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "/etc/secrets/firebase-key.json")
-cred = credentials.Certificate(FIREBASE_CRED_PATH)
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+def _find_firebase_key():
+    """Возвращает путь к ключу Firebase, пробуя несколько вариантов."""
+    candidates = []
+
+    # 1) Путь из переменной окружения (удобно для локальной разработки)
+    env_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
+    if env_path:
+        candidates.append(env_path)
+
+    # 2) Файл рядом с проектом (если есть локальный json в репозитории)
+    repo_file = os.path.join(
+        os.path.dirname(__file__),
+        "trivia-game-79e1b-firebase-adminsdk-fbsvc-20be34c499.json"
+    )
+    candidates.append(repo_file)
+
+    # 3) Путь Secret Files на Render
+    candidates.append("/etc/secrets/firebase-key.json")
+
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    raise FileNotFoundError(
+        "Не найден ключ Firebase. Укажите FIREBASE_CREDENTIALS_PATH, "
+        "или положите JSON рядом с проектом, или настройте Secret Files на Render."
+    )
+
+firebase_key_path = _find_firebase_key()
+cred = credentials.Certificate(firebase_key_path)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
-
-
 # ======= Получить список разрешённых пользователей из Firebase =======
 ALLOWED_USERS = set()
 def load_allowed_users():
