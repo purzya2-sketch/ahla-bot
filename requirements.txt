@@ -1,7 +1,8 @@
 pyTelegramBotAPI==4.14.1
 firebase-admin==6.2.0
 deep-translator==1.11.4
-openai
+openai==0.28.1
 schedule
 pytz
 requests
+python-dotenv==1.0.1
