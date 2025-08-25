@@ -1,8 +1,9 @@
-pyTelegramBotAPI==4.14.0
-deep-translator==1.11.4
-openai==1.12.0
+pyTelegramBotAPI==4.14.1
 firebase-admin==6.2.0
-python-dotenv==1.0.0
-schedule==1.2.0
-pytz==2023.3
-requests==2.31.0
+deep-translator==1.11.4
+openai==0.28.1          # Важно: зафиксировали старый SDK
+schedule==1.2.1
+pytz
+requests>=2.31.0
+python-dotenv==1.0.1    # для .env
+Flask==3.0.3            # мини HTTP-сервер
