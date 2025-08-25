@@ -25,8 +25,6 @@ user_translations = {}
 # ======= НАСТРОЙКИ =======
 TOKEN = '8147753305:AAEbWrC9D1hWM2xtK5L87XIGkD9GZAYcvFU'
 import os
-from dotenv import load_dotenv
-load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 bot = telebot.TeleBot(TOKEN)
 user_translations = {}
@@ -36,9 +34,11 @@ saved_explanations = {}
 saved_audio = {}
 
 # ======= Firebase =======
-cred = credentials.Certificate("trivia-game-79e1b-firebase-adminsdk-fbsvc-20be34c499.json")
+FIREBASE_CRED_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "/etc/secrets/firebase-key.json")
+cred = credentials.Certificate(FIREBASE_CRED_PATH)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
+
 
 # ======= Получить список разрешённых пользователей из Firebase =======
 ALLOWED_USERS = set()
