@@ -2,6 +2,9 @@
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+import sys
+import signal
 
 class HealthHandler(BaseHTTPRequestHandler):
     def _ok_headers(self):
@@ -10,7 +13,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # Можно отвечать "ok" на / и /health
         self._ok_headers()
         try:
             self.wfile.write(b"ok")
@@ -18,20 +20,18 @@ class HealthHandler(BaseHTTPRequestHandler):
             pass
 
     def do_HEAD(self):
-        # HEAD должен возвращать те же заголовки 200, но без тела
         self._ok_headers()
 
 def run_health_server():
-    port = int(os.environ.get("PORT", "10000"))  # Render задаёт PORT
+    port = int(os.environ.get("PORT", "10000"))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     print(f"Health server on port {port}")
     server.serve_forever()
 
-# Запускаем в отдельном потоке, чтобы не мешать боту
+# Запускаем в отдельном потоке
 threading.Thread(target=run_health_server, daemon=True).start()
 
-# --- дальше ваш код как был (инициализация бота и т.д.) ---
-
+# --- ИМПОРТЫ ---
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -39,84 +39,113 @@ import re
 HEB_RE = re.compile(r'[\u0590-\u05FF]')
 import openai
 import requests
-import os
 import datetime
 import random
 import firebase_admin
 from firebase_admin import credentials, firestore
 import schedule
-import time
-import threading
 import pytz
-
-def translate_text(text):
-    src = 'he' if HEB_RE.search(text) else 'auto'
-
-    # 1) Пробуем Google 2 раза (иногда кратковременный сбой)
-    last_err = None
-    for _ in range(2):
-        try:
-            return GoogleTranslator(source=src, target='ru').translate(text)
-        except Exception as e:
-            last_err = e
-            time.sleep(0.4)  # микропаузa и повтор
-
-    # 2) Фолбэк: MyMemory (чуть медленнее/ограничения, но стабильно)
-    try:
-        return MyMemoryTranslator(source=src, target='ru').translate(text)
-    except Exception as e2:
-        print(f"Ошибка перевода: Google: {last_err} | MyMemory: {e2}")
-        return "⚠️ Ошибка перевода"
 
 # ======= НАСТРОЙКИ =======
 TOKEN = '8147753305:AAEbWrC9D1hWM2xtK5L87XIGkD9GZAYcvFU'
 openai.api_key = os.getenv("OPENAI_API_KEY")
-bot = telebot.TeleBot(TOKEN)
+
+# 🔒 ЗАЩИТА ОТ МНОЖЕСТВЕННЫХ ЭКЗЕМПЛЯРОВ
+def clear_webhook_and_wait():
+    """Очищает webhook и ждет, пока предыдущий экземпляр завершится"""
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
+        response = requests.post(url)
+        print(f"Webhook cleared: {response.json()}")
+        
+        # Ждем 10 секунд для завершения других экземпляров
+        print("⏳ Ждем завершения других экземпляров...")
+        time.sleep(10)
+        
+    except Exception as e:
+        print(f"Ошибка при очистке webhook: {e}")
+
+# Очищаем webhook при запуске
+clear_webhook_and_wait()
+
+# Создаем бота с retry логикой
+def create_bot_with_retry():
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            bot = telebot.TeleBot(TOKEN)
+            # Тестовый запрос для проверки
+            bot.get_me()
+            print(f"✅ Бот успешно инициализирован (попытка {attempt + 1})")
+            return bot
+        except telebot.apihelper.ApiTelegramException as e:
+            if "409" in str(e):
+                print(f"❌ Конфликт экземпляров (попытка {attempt + 1}). Жду...")
+                time.sleep(15)  # Ждем дольше
+            else:
+                raise e
+        except Exception as e:
+            print(f"Ошибка инициализации бота: {e}")
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(5)
+    
+    raise Exception("Не удалось создать бота после всех попыток")
+
+bot = create_bot_with_retry()
 
 # Глобальные словари
 user_translations = {}
 user_data = {}
 saved_translations = {}
 saved_explanations = {}
-saved_audio = {}
+
+def translate_text(text):
+    src = 'he' if HEB_RE.search(text) else 'auto'
+    
+    last_err = None
+    for _ in range(2):
+        try:
+            return GoogleTranslator(source=src, target='ru').translate(text)
+        except Exception as e:
+            last_err = e
+            time.sleep(0.4)
+
+    try:
+        return MyMemoryTranslator(source=src, target='ru').translate(text)
+    except Exception as e2:
+        print(f"Ошибка перевода: Google: {last_err} | MyMemory: {e2}")
+        return "⚠️ Ошибка перевода"
 
 # ======= Firebase =======
 from dotenv import load_dotenv
 load_dotenv()
 
 def _find_firebase_key():
-    """Возвращает путь к ключу Firebase, пробуя несколько вариантов."""
     candidates = []
-
-    # 1) Путь из переменной окружения (удобно для локальной разработки)
     env_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
     if env_path:
         candidates.append(env_path)
 
-    # 2) Файл рядом с проектом (если есть локальный json в репозитории)
     repo_file = os.path.join(
         os.path.dirname(__file__),
         "trivia-game-79e1b-firebase-adminsdk-fbsvc-20be34c499.json"
     )
     candidates.append(repo_file)
-
-    # 3) Путь Secret Files на Render
     candidates.append("/etc/secrets/firebase-key.json")
 
     for p in candidates:
         if p and os.path.exists(p):
             return p
-    raise FileNotFoundError(
-        "Не найден ключ Firebase. Укажите FIREBASE_CREDENTIALS_PATH, "
-        "или положите JSON рядом с проектом, или настройте Secret Files на Render."
-    )
+    raise FileNotFoundError("Не найден ключ Firebase")
 
 firebase_key_path = _find_firebase_key()
 cred = credentials.Certificate(firebase_key_path)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# ======= Получить список разрешённых пользователей из Firebase =======
+# ======= Пользователи =======
 ALLOWED_USERS = set()
 def load_allowed_users():
     try:
@@ -129,7 +158,6 @@ def load_allowed_users():
 
 load_allowed_users()
 
-# ✅ Команда /id
 @bot.message_handler(commands=['id'])
 def send_user_id(message):
     bot.send_message(message.chat.id, f"👤 Твой Telegram ID: `{message.from_user.id}`", parse_mode='Markdown')
@@ -146,19 +174,8 @@ phrase_db = [
     {"he": "יאללה נלך", "ru": "Ну, пойдём", "note": "Пора идти — по-дружески, с призывом."},
     {"he": "אין עליך", "ru": "Ты лучший!", "note": "Сленговая похвала, прямой комплимент."},
     {"he": "סמוך עליי", "ru": "Положись на меня", "note": "Фраза уверенности, поддержка."},
-    {"he": "מה נסגר איתך?", "ru": "Что с тобой?", "note": "Раздражённый или шутливый тон, сленг."},
-    {"he": "סגור", "ru": "Договорились", "note": "Сленг. Используется при согласии."},
-    {"he": "חייב לזוז", "ru": "Мне пора", "note": "Разговорный способ попрощаться."},
-    {"he": "קטע", "ru": "Прикол / Ситуация", "note": "Может означать момент, ситуация, прикол."},
-    {"he": "תשמור על עצמך", "ru": "Береги себя", "note": "Прощальная заботливая фраза."},
-    {"he": "אל תדאג", "ru": "Не волнуйся", "note": "Успокаивающая фраза."},
-    {"he": "בקטנה", "ru": "Пустяки", "note": "Фраза при ответе на благодарность или просьбу."},
-    {"he": "מה אתה אומר", "ru": "Да ты что!", "note": "Удивление или интерес."},
-    {"he": "סתם", "ru": "Просто так / Шутка", "note": "Сленг. Для разрядки."},
-    {"he": "תן בראש", "ru": "Вперёд! / Покажи класс!", "note": "Поддержка, мотивация."}
 ]
 
-# Команда /daily — отправить фразу дня вручную
 @bot.message_handler(commands=['daily'])
 def send_daily_now(message):
     if ALLOWED_USERS and message.from_user.id not in ALLOWED_USERS:
@@ -174,7 +191,7 @@ def send_daily_now(message):
     )
     bot.send_message(message.chat.id, msg, parse_mode='Markdown')
 
-# ======= РАССЫЛКА ФРАЗЫ ДНЯ В 8:00 ПО ИЗРАИЛЮ =======
+# ======= РАССЫЛКА =======
 tz = pytz.timezone('Asia/Jerusalem')
 
 def send_daily_phrase():
@@ -199,7 +216,6 @@ def schedule_daily_phrase():
             time.sleep(60)
         time.sleep(1)
 
-# Запустить в фоновом потоке
 threading.Thread(target=schedule_daily_phrase, daemon=True).start()
 
 # ======= КНОПКИ =======
@@ -219,19 +235,16 @@ def get_yes_no_keyboard():
     )
     return markup
 
-# ======= ПРОВЕРКА ДОСТУПА =======
 def check_access(user_id):
     return not ALLOWED_USERS or user_id in ALLOWED_USERS
 
-# ======= ТЕКСТ =======
+# ======= ОБРАБОТЧИКИ =======
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    # Проверка доступа
     if not check_access(message.from_user.id):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
         return
     
-    # Обработка пересланных сообщений
     if message.forward_from or message.forward_from_chat:
         user_data[message.chat.id] = {'forwarded_text': message.text.strip()}
         bot.send_message(message.chat.id, "📩 Пересланное сообщение. Хотите перевести?", reply_markup=get_yes_no_keyboard())
@@ -253,10 +266,8 @@ def handle_text(message):
         print(f"Ошибка при переводе: {e}")
         bot.send_message(message.chat.id, "Ошибка при переводе 🫣")
 
-# ======= ГОЛОС =======
 @bot.message_handler(content_types=['voice', 'audio'])
 def handle_voice(message):
-    # Проверка доступа
     if not check_access(message.from_user.id):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
         return
@@ -280,7 +291,6 @@ def process_audio(message):
 
         with open("voice.mp3", "rb") as audio_file:
             try:
-                # Обновленный синтаксис для новой версии OpenAI API
                 client = openai.OpenAI()
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1",
@@ -309,12 +319,10 @@ def process_audio(message):
         print(f"Ошибка с аудио: {e}")
         bot.send_message(message.chat.id, "Не удалось обработать аудио 😢")
     finally:
-        # Очистка временных файлов
         for file in ["voice.ogg", "voice.mp3"]:
             if os.path.exists(file):
                 os.remove(file)
 
-# ======= КНОПКИ CALLBACK =======
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     bot.answer_callback_query(call.id)
@@ -378,7 +386,6 @@ def handle_callback(call):
         elif 'forwarded_audio' in chat_data:
             process_audio(chat_data['forwarded_audio'])
         
-        # Очистка данных
         if call.message.chat.id in user_data:
             del user_data[call.message.chat.id]
     
@@ -387,8 +394,17 @@ def handle_callback(call):
         if call.message.chat.id in user_data:
             del user_data[call.message.chat.id]
 
-# ======= СТАРТ =======
-print("AhlaBot запущен ✅")
+# ======= GRACEFUL SHUTDOWN =======
+def signal_handler(sig, frame):
+    print('\n🛑 Получен сигнал завершения. Останавливаю бота...')
+    bot.stop_polling()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+# ======= ЗАПУСК =======
+print("🚀 AhlaBot запущен с защитой от дублей ✅")
 
 def schedule_thread():
     schedule.every().day.at("08:00").do(send_daily_phrase)
@@ -398,5 +414,11 @@ def schedule_thread():
 
 threading.Thread(target=schedule_thread, daemon=True).start()
 
+# 🔒 ЗАЩИЩЕННЫЙ ЗАПУСК
 if __name__ == "__main__":
-    bot.infinity_polling()
+    try:
+        print("⏳ Запускаю infinity_polling...")
+        bot.infinity_polling(timeout=20, long_polling_timeout=20)
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        sys.exit(1)
