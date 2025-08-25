@@ -27,6 +27,8 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from deep_translator import GoogleTranslator
 import openai
+import re
+HEB_RE = re.compile(r'[\u0590-\u05FF]')
 import requests
 import os
 import datetime
@@ -39,10 +41,15 @@ import threading
 import pytz
 def translate_text(text):
     try:
+        # если в тексте есть символы иврита – считаем источник 'he'
+        if HEB_RE.search(text):
+            return GoogleTranslator(source='he', target='ru').translate(text)
+        # иначе как раньше
         return GoogleTranslator(source='auto', target='ru').translate(text)
     except Exception as e:
         print(f"Ошибка перевода: {e}")
         return "⚠️ Ошибка перевода"
+
     
 
 user_translations = {}
@@ -269,8 +276,10 @@ def handle_text(message):
         bot.register_next_step_handler(message, save_forwarded_text)
     else:
         try:
-            translated_text = translate_text(message.text)
-            user_translations[message.chat.id] = translated_text
+            orig = message.text.strip()
+            user_translations[message.chat.id] = orig           # <-- сохраняем ОРИГИНАЛ
+            translated_text = translate_text(orig)
+
             bot.send_message(
                 message.chat.id,
                 f"📘 Перевод:\n*{translated_text}*",
