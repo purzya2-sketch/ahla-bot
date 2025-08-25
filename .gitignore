@@ -1,0 +1,7 @@
+*.pyc
+__pycache__/
+trivia-game-*.json
+.env
+*.env
+replacements.txt
+*firebase-adminsdk*.json

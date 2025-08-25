@@ -1,0 +1,7 @@
+pyTelegramBotAPI==4.14.1
+firebase-admin==6.2.0
+deep-translator==1.11.4
+openai
+schedule
+pytz
+requests
