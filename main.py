@@ -1,17 +1,24 @@
-# --- добавьте в самый верх main.py ---
-import os
-import threading
+# --- ИМПОРТЫ (единый и без дублей) ---
+import os, sys, time, threading, signal, random
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from openai import OpenAI
-client = OpenAI(api_key=(os.getenv("OPENAI_API_KEY") or "").strip(), timeout=20)
-import time
-import sys
-import random
-from datetime import datetime
+
+import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import signal
-import random
-from openai import APIConnectionError, RateLimitError, APIStatusError, AuthenticationError, BadRequestError
+
+import pytz
+from datetime import datetime, timedelta
+
+from openai import OpenAI
+from openai import (
+    APIConnectionError, RateLimitError, APIStatusError,
+    AuthenticationError, BadRequestError,
+)
+
+# Таймзона (нужна для расписания 08:00)
+tz = pytz.timezone('Asia/Jerusalem')
+
+# Клиент OpenAI (после импортов)
+client = OpenAI(api_key=(os.getenv("OPENAI_API_KEY") or "").strip(), timeout=20)
 
 def ask_gpt(messages, model="gpt-4o", max_retries=3):
     """Запрос к OpenAI с ретраями и экспоненциальной паузой."""
@@ -72,20 +79,6 @@ def run_health_server():
 # Запускаем в отдельном потоке
 threading.Thread(target=run_health_server, daemon=True).start()
 
-# --- ИМПОРТЫ ---
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from deep_translator import GoogleTranslator, MyMemoryTranslator
-import re
-HEB_RE = re.compile(r'[\u0590-\u05FF]')
-import openai
-import requests
-import datetime
-import random
-import firebase_admin
-from firebase_admin import credentials, firestore
-import schedule
-import pytz
 
 # ======= НАСТРОЙКИ =======
 TOKEN = '8147753305:AAEbWrC9D1hWM2xtK5L87XIGkD9GZAYcvFU'
@@ -364,7 +357,7 @@ phrase_db = load_phrases(PHRASES_PATH)
 
 def get_today_phrase(dt=None):
     """Возвращает одну и ту же фразу на текущую дату (Asia/Jerusalem)."""
-    dt = dt or datetime.datetime.now(tz)  # tz у тебя уже задан: tz = pytz.timezone('Asia/Jerusalem')
+    dt = dt or datetime.now(tz)  # tz у тебя уже задан: tz = pytz.timezone('Asia/Jerusalem')
     day_key = dt.strftime("%Y-%m-%d")
     # детерминированный индекс через хэш даты
     h = hashlib.md5(day_key.encode("utf-8")).hexdigest()
