@@ -99,6 +99,8 @@ def create_bot_with_retry():
     raise Exception("Не удалось создать бота после всех попыток")
 
 bot = create_bot_with_retry()
+# какой движок перевода использовали в последний раз для этого чата
+user_engine = {}  # chat_id -> "google" | "mymemory"
 
 # ===== Переводчики =====
 from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -115,6 +117,26 @@ def translate_text(text: str) -> str:
         except Exception as e2:
             print(f"[translate_text] MyMemory error: {e2}")
             return "⚠️ Ошибка перевода"
+
+def translate_with_engine(text: str, engine: str) -> tuple[str, str]:
+    """Перевод строго выбранным движком. Возвращает (перевод, использованный_движок)."""
+    src = "iw" if HEB_RE.search(text) else "auto"
+    try:
+        if engine == "mymemory":
+            return MyMemoryTranslator(source=src, target="ru").translate(text), "mymemory"
+        else:
+            return GoogleTranslator(source=src, target="ru").translate(text), "google"
+    except Exception as e:
+        # если выбранный движок упал — пробуем другой
+        other = "google" if engine == "mymemory" else "mymemory"
+        try:
+            if other == "mymemory":
+                return MyMemoryTranslator(source=src, target="ru").translate(text), "mymemory"
+            else:
+                return GoogleTranslator(source=src, target="ru").translate(text), "google"
+        except Exception as e2:
+            print(f"[translate_with_engine] оба упали: {e} / {e2}")
+            return "⚠️ Ошибка перевода", engine
 
 # ---- офлайн-фолбэк для "Объяснить" ----
 IDOMS = {
@@ -441,6 +463,8 @@ def handle_text(message):
         orig = message.text.strip()
         user_translations[message.chat.id] = orig
         translated_text = translate_text(orig)
+        # ↓↓↓ ДОБАВЛЕНА строка: считаем, что сработал Google
+        user_engine[message.chat.id] = "google"
         bot.send_message(message.chat.id, f"📘 Перевод:\n*{translated_text}*", reply_markup=get_keyboard(), parse_mode='Markdown')
     except Exception as e:
         print(f"Ошибка при переводе: {e}")
@@ -519,14 +543,26 @@ def handle_callback(call):
             local = explain_local(text)
             bot.send_message(call.message.chat.id, f"🧠 Объяснение (офлайн):\n{local}")
     elif call.data == "new":
-        text = user_translations.get(call.message.chat.id)
-        if text:
-            try:
-                translated_text = translate_text(text)
-                bot.send_message(call.message.chat.id, f"📘 Новый перевод:\n*{translated_text}*", reply_markup=get_keyboard(), parse_mode='Markdown')
-            except Exception as e:
-                print(f"Ошибка повторного перевода: {e}")
-                bot.send_message(call.message.chat.id, "Ошибка при переводе 🫣")
+        # ↓↓↓ ЗАМЕНЁННЫЙ БЛОК: теперь «альтернативный» перевод
+        chat_id = call.message.chat.id
+        text = user_translations.get(chat_id)
+        if not text:
+            bot.send_message(chat_id, "Сначала пришли фразу, а потом жми «Ещё перевод».")
+            return
+
+        prev = user_engine.get(chat_id, "google")
+        next_engine = "mymemory" if prev == "google" else "google"
+
+        tr, used = translate_with_engine(text, next_engine)
+        user_engine[chat_id] = used
+        engine_title = "MyMemory" if used == "mymemory" else "Google"
+
+        bot.send_message(
+            chat_id,
+            f"📘 Вариант ({engine_title}):\n*{tr}*",
+            reply_markup=get_keyboard(),
+            parse_mode='Markdown'
+        )
     elif call.data == "translate_forwarded":
         chat_data = user_data.get(call.message.chat.id, {})
         if 'forwarded_text' in chat_data:
