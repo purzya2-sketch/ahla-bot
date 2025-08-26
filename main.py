@@ -5,6 +5,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import openai                  # нужно для openai.api_key = ...
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 
 import pytz
 from datetime import datetime, timedelta
@@ -198,6 +201,14 @@ def _find_firebase_key():
         if p and os.path.exists(p):
             return p
     raise FileNotFoundError("Не найден ключ Firebase")
+# пример: путь к ключу берём из переменной окружения или файла в корне
+firebase_key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "firebase-key.json"
+
+cred = credentials.Certificate(firebase_key_path)
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 firebase_key_path = _find_firebase_key()
 cred = credentials.Certificate(firebase_key_path)
