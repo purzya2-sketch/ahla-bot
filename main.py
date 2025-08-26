@@ -25,7 +25,20 @@ from openai import (
 client = OpenAI(api_key=openai.api_key, timeout=30)
 
 # Telegram bot
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE").strip()
+TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+# Мини-диагностика, чтобы в логах сразу было видно, что именно пришло
+def _mask_token(t: str) -> str:
+    if not t:
+        return "<empty>"
+    head = t.split(":")[0]  # обычно цифры до двоеточия
+    tail = t[-4:] if len(t) >= 4 else t
+    return f"{head}:***...***{tail}"
+
+if not TOKEN or ":" not in TOKEN:
+    print(f"[BOOT] TELEGRAM_BOT_TOKEN invalid. Read='{_mask_token(TOKEN)}' len={len(TOKEN)}")
+    raise RuntimeError("TELEGRAM_BOT_TOKEN отсутствует или неверен. Проверь в Render → Settings → Environment.")
+else:
+    print(f"[BOOT] TELEGRAM_BOT_TOKEN ok: {_mask_token(TOKEN)}")
 # Если у тебя токен жёстко вшит — можешь заменить на строку:
 # TOKEN = "8147...cvFU"
 
