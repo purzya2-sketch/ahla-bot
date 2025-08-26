@@ -1,7 +1,7 @@
 pyTelegramBotAPI==4.14.1
 firebase-admin==6.2.0
 deep-translator==1.11.4
-openai==0.28.1          # Важно: зафиксировали старый SDK
+openai>=1.101.0          # Важно: зафиксировали старый SDK
 schedule==1.2.1
 pytz
 requests>=2.31.0

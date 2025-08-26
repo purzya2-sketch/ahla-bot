@@ -3,10 +3,46 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from openai import OpenAI
-client = OpenAI()  # возьмёт OPENAI_API_KEY из окружения
+client = OpenAI(api_key=(os.getenv("OPENAI_API_KEY") or "").strip(), timeout=20)
 import time
 import sys
 import signal
+import random
+from openai import APIConnectionError, RateLimitError, APIStatusError, AuthenticationError, BadRequestError
+
+def ask_gpt(messages, model="gpt-4o", max_retries=3):
+    """Запрос к OpenAI с ретраями и экспоненциальной паузой."""
+    delay = 1.0
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.4,
+                timeout=30,  # добавляем таймаут
+            )
+            return resp.choices[0].message.content.strip()
+        except (APIConnectionError, RateLimitError, APIStatusError) as e:
+            print(f"[ask_gpt] API error (попытка {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                # Возвращаем None вместо исключения
+                return None
+        except (AuthenticationError, BadRequestError) as e:
+            # это уже не сеть — ключ/запрос. Пробрасываем дальше
+            print(f"[ask_gpt] Auth/BadRequest error: {e}")
+            raise
+        except Exception as e:
+            print(f"[ask_gpt] Unexpected error (попытка {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                return None
+        
+        if attempt < max_retries:
+            sleep_time = delay + random.uniform(0, 0.5)
+            print(f"[ask_gpt] Ждём {sleep_time:.1f} секунд перед повтором...")
+            time.sleep(sleep_time)
+            delay *= 2
+    
+    return None
 
 class HealthHandler(BaseHTTPRequestHandler):
     def _ok_headers(self):
@@ -63,7 +99,7 @@ def clear_webhook_and_wait():
         
         # Ждем 10 секунд для завершения других экземпляров
         print("⏳ Ждем завершения других экземпляров...")
-        time.sleep(10)
+        time.sleep(20)
         
     except Exception as e:
         print(f"Ошибка при очистке webhook: {e}")
@@ -103,22 +139,49 @@ user_data = {}
 saved_translations = {}
 saved_explanations = {}
 
-def translate_text(text):
-    src = 'he' if HEB_RE.search(text) else 'auto'
-    
-    last_err = None
-    for _ in range(2):
-        try:
-            return GoogleTranslator(source=src, target='ru').translate(text)
-        except Exception as e:
-            last_err = e
-            time.sleep(0.4)
+from deep_translator import GoogleTranslator, MyMemoryTranslator
+
+def translate_text(text: str) -> str:
+    """Стабильный перевод: сначала deep-translator, при ошибке — MyMemory."""
+    # если есть ивритские буквы → явно ставим код языка "iw"
+    src = "iw" if HEB_RE.search(text) else "auto"
 
     try:
-        return MyMemoryTranslator(source=src, target='ru').translate(text)
-    except Exception as e2:
-        print(f"Ошибка перевода: Google: {last_err} | MyMemory: {e2}")
-        return "⚠️ Ошибка перевода"
+        return GoogleTranslator(source=src, target="ru").translate(text)
+    except Exception as e1:
+        print(f"[translate_text] deep-translator error: {e1}")
+        try:
+            return MyMemoryTranslator(source=src, target="ru").translate(text)
+        except Exception as e2:
+            print(f"[translate_text] MyMemory error: {e2}")
+            return "⚠️ Ошибка перевода"
+
+# ---- офлайн-фолбэк для "Объяснить" ----
+IDOMS = {
+    "יאללה": "Сленг: «давай/погнали/ну же». Многофункциональное слово.",
+    "סבבה": "Сленг: «окей, супер, норм». Универсальное согласие.",
+    "באסה": "Сленг: «облом, неприятность».",
+    "תכלס": "Сленг: «по сути, по факту». Пишут и как תכל׳ס.",
+    "כפרה": "Ласковое обращение: «душа моя». Может быть и в шутку.",
+    "אין מצב": "«Ни за что / да ну!» — удивление или отказ.",
+    "די נו": "«Хватит уже / да ну». Лёгкое раздражение.",
+    "מה נסגר איתך": "«Что с тобой происходит?» — разговорное.",
+}
+
+def explain_local(he_text: str) -> str:
+    tr = translate_text(he_text)
+    hits = []
+    low = he_text.replace("׳","").replace("'","").replace("`","")
+    for k, note in IDOMS.items():
+        if k in low or k.replace("׳","") in low:
+            hits.append(f"• *{k}* — {note}")
+    note_block = "\n".join(hits) if hits else "Сленг/идиом не найдено."
+    return (
+        f"Перевод: {tr}\n\n"
+        f"Сленг/идиомы:\n{note_block}\n\n"
+        f"Грамматика: разговорная речь; для точного морфоразбора (корни/биньяны) нужен онлайн-режим."
+    )
+
 
 # ======= Firebase =======
 from dotenv import load_dotenv
@@ -164,19 +227,43 @@ load_allowed_users()
 def send_user_id(message):
     bot.send_message(message.chat.id, f"👤 Твой Telegram ID: `{message.from_user.id}`", parse_mode='Markdown')
 
-# ======= ФРАЗЫ ДНЯ =======
-phrase_db = [
+# ======= ФРАЗЫ ДНЯ (из файла + одна фраза на день) =======
+import json, os, hashlib
+
+# Создаем переменную tz для временной зоны
+tz = pytz.timezone('Asia/Jerusalem')
+
+# 1) Резервные фразы на случай, если phrases.json не загрузится
+DEFAULT_PHRASES = [
     {"he": "לאט לאט", "ru": "Постепенно / Не спеши", "note": "Популярная фраза — о терпении, спокойствии."},
     {"he": "יאללה", "ru": "Давай / Ну же!", "note": "Многофункциональный сленг, призыв к действию."},
     {"he": "חבל על הזמן", "ru": "Круто! / Отлично!", "note": "Букв. 'Жаль времени', но в сленге — 'супер'."},
-    {"he": "נראה לי", "ru": "Мне кажется", "note": "Фраза мнения, часто используется в разговоре."},
-    {"he": "מה פתאום!", "ru": "С чего вдруг?!", "note": "Удивление или несогласие, очень разговорно."},
-    {"he": "כפרה עליך", "ru": "Душа моя / Спасибо", "note": "Сленг, тёплое обращение или благодарность."},
-    {"he": "בלי לחץ", "ru": "Без стресса / Не спеши", "note": "Успокаивающая фраза, антипаника."},
-    {"he": "יאללה נלך", "ru": "Ну, пойдём", "note": "Пора идти — по-дружески, с призывом."},
-    {"he": "אין עליך", "ru": "Ты лучший!", "note": "Сленговая похвала, прямой комплимент."},
-    {"he": "סמוך עליי", "ru": "Положись на меня", "note": "Фраза уверенности, поддержка."},
+    # можешь оставить тут ещё несколько базовых как запас
 ]
+
+def load_phrases(path: str) -> list:
+    """Загружаем список фраз из JSON; если не вышло — берём резерв."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            assert isinstance(data, list) and data, "phrases.json пустой"
+            return data
+    except Exception as e:
+        print(f"[phrases] не удалось загрузить {path}: {e}")
+        return DEFAULT_PHRASES
+
+# Можно переопределить путь через переменную окружения PHRASES_PATH
+PHRASES_PATH = os.getenv("PHRASES_PATH", "phrases.json")
+phrase_db = load_phrases(PHRASES_PATH)
+
+def get_today_phrase(dt=None):
+    """Возвращает одну и ту же фразу на текущую дату (Asia/Jerusalem)."""
+    dt = dt or datetime.datetime.now(tz)  # tz у тебя уже задан: tz = pytz.timezone('Asia/Jerusalem')
+    day_key = dt.strftime("%Y-%m-%d")
+    # детерминированный индекс через хэш даты
+    h = hashlib.md5(day_key.encode("utf-8")).hexdigest()
+    idx = int(h, 16) % len(phrase_db)
+    return phrase_db[idx]
 
 @bot.message_handler(commands=['daily'])
 def send_daily_now(message):
@@ -184,7 +271,7 @@ def send_daily_now(message):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
         return
 
-    phrase = random.choice(phrase_db)
+    phrase = get_today_phrase()
     msg = (
         f"☀️ בוקר טוב!\nКак дела? Вот тебе фраза дня:\n\n"
         f"🗣 *{phrase['he']}*\n"
@@ -194,31 +281,29 @@ def send_daily_now(message):
     bot.send_message(message.chat.id, msg, parse_mode='Markdown')
 
 # ======= РАССЫЛКА =======
-tz = pytz.timezone('Asia/Jerusalem')
-
 def send_daily_phrase():
+    """Отправляем всем одну и ту же фразу за сегодняшний день."""
+    phrase = get_today_phrase()
+    msg = (
+        f"☀️ בוקר טוב!\nКак дела? Вот тебе фраза дня:\n\n"
+        f"🗣 *{phrase['he']}*\n"
+        f"📘 Перевод: _{phrase['ru']}_\n"
+        f"💬 Пояснение: {phrase['note']}"
+    )
     for user_id in ALLOWED_USERS:
         try:
-            phrase = random.choice(phrase_db)
-            msg = (
-                f"☀️ בוקר טוב!\nКак дела? Вот тебе фраза дня:\n\n"
-                f"🗣 *{phrase['he']}*\n"
-                f"📘 Перевод: _{phrase['ru']}_\n"
-                f"💬 Пояснение: {phrase['note']}"
-            )
             bot.send_message(user_id, msg, parse_mode='Markdown')
         except Exception as e:
             print(f"Ошибка при отправке фразы дня пользователю {user_id}: {e}")
 
 def schedule_daily_phrase():
+    """Проверяем время и шлём в 08:00 по Иерусалиму."""
     while True:
         now = datetime.datetime.now(tz)
         if now.hour == 8 and now.minute == 0:
             send_daily_phrase()
-            time.sleep(60)
+            time.sleep(60)  # чтобы не отправить дважды в ту же минуту
         time.sleep(1)
-
-threading.Thread(target=schedule_daily_phrase, daemon=True).start()
 
 # ======= КНОПКИ =======
 def get_keyboard():
@@ -331,36 +416,47 @@ def process_audio(message):
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     bot.answer_callback_query(call.id)
-    
+
     if call.data == "explain":
         text = user_translations.get(call.message.chat.id)
         if not text:
             bot.send_message(call.message.chat.id, "Нет текста для объяснения.")
             return
 
+        sys_prompt = (
+            "Ты — опытный преподаватель разговорного иврита. "
+            "Проанализируй фразу на иврите: переведи естественно, выдели корень, биньян, "
+            "грамматическую форму глаголов; объясни сленг/идиомы и происхождение, если есть; "
+            "дай короткий пример использования."
+        )
+
         try:
-            client 
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": (
-                        "Ты — опытный преподаватель разговорного иврита. "
-                        "Проанализируй фразу на иврите: выдели перевод, корень, биньян, грамматическую форму каждого глагола. "
-                        "Обязательно объясни сленг, разговорные выражения и происхождение, если есть. "
-                        "Приведи пример использования в другой фразе, если это уместно."
-                    )},
-                    {"role": "user", "content": text}
+            answer = ask_gpt(
+                [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": text},
                 ],
-                temperature=0.4
+                model=os.getenv("OPENAI_MODEL", "gpt-4o"),
             )
-
-            answer = response.choices[0].message.content.strip()
-            bot.send_message(call.message.chat.id, f"🧠 Объяснение:\n{answer}")
-
+            
+            if answer is None:
+                # Если OpenAI недоступен, используем офлайн режим
+                local = explain_local(text)
+                bot.send_message(call.message.chat.id, f"🧠 Объяснение (офлайн):\n{local}")
+            else:
+                bot.send_message(call.message.chat.id, f"🧠 Объяснение:\n{answer}")
+                
+        except AuthenticationError:
+            bot.send_message(call.message.chat.id, "⚠️ Проблема с ключом OpenAI. Проверь OPENAI_API_KEY.")
+        except BadRequestError as e:
+            print(f"[ask_gpt] BadRequest: {e}")
+            bot.send_message(call.message.chat.id, "⚠️ Не удалось разобрать запрос для объяснения.")
         except Exception as e:
-            print(f"GPT error: {e}")
-            bot.send_message(call.message.chat.id, "⚠️ Не удалось получить объяснение.")
-    
+            print(f"Неожиданная ошибка при объяснении: {e}")
+            # Фолбэк на офлайн режим
+            local = explain_local(text)
+            bot.send_message(call.message.chat.id, f"🧠 Объяснение (офлайн):\n{local}")
+
     elif call.data == "new":
         text = user_translations.get(call.message.chat.id)
         if text:
@@ -375,7 +471,7 @@ def handle_callback(call):
             except Exception as e:
                 print(f"Ошибка повторного перевода: {e}")
                 bot.send_message(call.message.chat.id, "Ошибка при переводе 🫣")
-    
+
     elif call.data == "translate_forwarded":
         chat_data = user_data.get(call.message.chat.id, {})
         if 'forwarded_text' in chat_data:
@@ -390,14 +486,15 @@ def handle_callback(call):
             )
         elif 'forwarded_audio' in chat_data:
             process_audio(chat_data['forwarded_audio'])
-        
+
         if call.message.chat.id in user_data:
             del user_data[call.message.chat.id]
-    
+
     elif call.data == "cancel":
         bot.send_message(call.message.chat.id, "❌ Отменено")
         if call.message.chat.id in user_data:
             del user_data[call.message.chat.id]
+
 
 # ======= GRACEFUL SHUTDOWN =======
 def signal_handler(sig, frame):
@@ -423,8 +520,7 @@ threading.Thread(target=schedule_thread, daemon=True).start()
 if __name__ == "__main__":
     try:
         print("⏳ Запускаю infinity_polling...")
-        bot.infinity_polling(timeout=20, long_polling_timeout=20)
-        bot.infinity_polling(timeout=20, long_polling_timeout=20, skip_pending=True)
+        bot.infinity_polling(timeout=20, long_polling_timeout=20, skip_pending=True, allowed_updates=['message','callback_query'])
 
     except Exception as e:
         print(f"Критическая ошибка: {e}")
