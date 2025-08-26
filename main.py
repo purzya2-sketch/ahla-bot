@@ -25,7 +25,18 @@ from openai import (
 client = OpenAI(api_key=openai.api_key, timeout=30)
 
 # Telegram bot
-TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+# читаем из TELEGRAM_TOKEN, а если его нет — из TELEGRAM_BOT_TOKEN
+TOKEN = (os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+
+def _mask_token(t: str) -> str:
+    if not t: return "<empty>"
+    head = t.split(":")[0]; tail = t[-4:] if len(t) >= 4 else t
+    return f"{head}:***...***{tail}"
+
+print(f"[BOOT] TOKEN: {_mask_token(TOKEN)}")
+if not TOKEN or ":" not in TOKEN:
+    raise RuntimeError("Не найден TELEGRAM_TOKEN/TELEGRAM_BOT_TOKEN")
+
 # Мини-диагностика, чтобы в логах сразу было видно, что именно пришло
 def _mask_token(t: str) -> str:
     if not t:
@@ -99,6 +110,7 @@ def create_bot_with_retry():
     raise Exception("Не удалось создать бота после всех попыток")
 
 bot = create_bot_with_retry()
+
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
 
