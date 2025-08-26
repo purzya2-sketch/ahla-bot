@@ -1,24 +1,22 @@
-# --- ИМПОРТЫ (единый и без дублей) ---
-import os, sys, time, threading, signal, random
+# --- ИМПОРТЫ (коротко и без дублей) ---
+import os, sys, time, threading, signal
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import openai                  # нужно для openai.api_key = ...
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import pytz
 from datetime import datetime, timedelta
 
-from openai import OpenAI
-from openai import (
-    APIConnectionError, RateLimitError, APIStatusError,
-    AuthenticationError, BadRequestError,
-)
+import random                  # ← нужен для викторины
 
-# Таймзона (нужна для расписания 08:00)
+# Таймзона
 tz = pytz.timezone('Asia/Jerusalem')
 
-# Клиент OpenAI (после импортов)
-client = OpenAI(api_key=(os.getenv("OPENAI_API_KEY") or "").strip(), timeout=20)
+# Ключ OpenAI (старый стабильный стиль)
+openai.api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+
 
 def ask_gpt(messages, model="gpt-4o", max_retries=3):
     """Запрос к OpenAI с ретраями и экспоненциальной паузой."""
