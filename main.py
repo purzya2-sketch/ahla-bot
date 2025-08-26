@@ -646,11 +646,25 @@ def ask_gpt(messages, model="gpt-4o", max_retries=3):
     return None
 
 if __name__ == "__main__":
-    try:
-        print("⏳ Запускаю infinity_polling...")
-        bot.infinity_polling(timeout=20, long_polling_timeout=20,
-                             skip_pending=True,
-                             allowed_updates=['message','callback_query'])
-    except Exception as e:
-        print(f"Критическая ошибка: {e}")
-        sys.exit(1)
+    while True:
+        try:
+            print("⏳ Запускаю infinity_polling...")
+            bot.infinity_polling(
+                timeout=20,
+                long_polling_timeout=20,
+                skip_pending=True,
+                allowed_updates=['message', 'callback_query']
+            )
+        except telebot.apihelper.ApiTelegramException as e:
+            s = str(e)
+            if "409" in s or "getUpdates request" in s:
+                print("⚠️ 409: другой процесс ещё поллит. Жду 25 сек и пробую снова…")
+                time.sleep(25)
+                continue
+            print(f"Telebot error: {e}. Повтор через 10 сек.")
+            time.sleep(10)
+            continue
+        except Exception as e:
+            print(f"Критическая ошибка: {e}. Повтор через 10 сек.")
+            time.sleep(10)
+
