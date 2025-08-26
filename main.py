@@ -461,11 +461,30 @@ def get_yes_no_keyboard():
 # ===== Обработчики сообщений =====
 user_translations = {}
 user_data = {}
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+
+@bot.message_handler(commands=['start','help'])
+def cmd_start(m):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(KeyboardButton("/quiz"), KeyboardButton("/quizstats"))
+    kb.row(KeyboardButton("/id"))
+    bot.send_message(
+        m.chat.id,
+        "Привет! Я перевожу и объясняю иврит.\n"
+        "• Пришли фразу или перешли сообщение — дам перевод\n"
+        "• Под переводом будут кнопки «🧠 Объяснить» и «🔁 Ещё перевод»\n"
+        "• Голосовые тоже можно — пришли аудио\n"
+        "• Мини-игра: /quiz",
+        reply_markup=kb
+    )
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     if not check_access(message.from_user.id):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
+        return
+    # 🔒 не переводим слэш-команды вроде /start, /quiz и т.п.
+    if message.text.startswith('/'):
         return
     if message.forward_from or message.forward_from_chat:
         user_data[message.chat.id] = {'forwarded_text': message.text.strip()}
