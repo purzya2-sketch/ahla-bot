@@ -6,6 +6,9 @@ from openai import OpenAI
 client = OpenAI(api_key=(os.getenv("OPENAI_API_KEY") or "").strip(), timeout=20)
 import time
 import sys
+import random
+from datetime import datetime
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import signal
 import random
 from openai import APIConnectionError, RateLimitError, APIStatusError, AuthenticationError, BadRequestError
@@ -229,9 +232,112 @@ def send_user_id(message):
 
 # ======= ФРАЗЫ ДНЯ (из файла + одна фраза на день) =======
 import json, os, hashlib
+@bot.message_handler(commands=['quizstats'])
+def quiz_stats(m):
+    snap = _quiz_stats_ref(m.from_user.id).get()
+    d = snap.to_dict() if snap.exists else {"total": 0, "correct": 0}
+    bot.send_message(m.chat.id, f"Твой счёт: {d.get('correct',0)}/{d.get('total',0)}")
+
+@bot.message_handler(commands=['quizreset'])
+def quiz_reset(m):
+    _quiz_stats_ref(m.from_user.id).delete()
+    bot.send_message(m.chat.id, "Счёт сброшен.")
 
 # Создаем переменную tz для временной зоны
 tz = pytz.timezone('Asia/Jerusalem')
+# ======= ФРАЗЫ ДНЯ (из файла + одна фраза на день) =======
+
+# 0) РЕЗЕРВ — на случай, если файла нет/сломался
+FALLBACK_PHRASES = [
+    {"he": "סבבה",              "ru": "окей; норм",                    "note": "разговорное «ок»"},
+    {"he": "אין בעיה",          "ru": "без проблем",                   "note": ""},
+    {"he": "יאללה, נתקדם",      "ru": "ну поехали, двигаемся",         "note": ""},
+    {"he": "בא לי קפה",         "ru": "мне хочется кофе",              "note": "בא לי — «мне хочется»"},
+    {"he": "כמה זה יוצא?",      "ru": "сколько выходит?",              "note": "про цену/итог"},
+    {"he": "סגרתי פינה",        "ru": "закрыла вопрос; разобралась",   "note": "сленг"},
+    {"he": "יאללה, זזתי",       "ru": "ладно, я пошла",                "note": "букв. «двинулась»"},
+    {"he": "שניה, אני בודקת",   "ru": "секунду, я проверю",            "note": ""},
+]
+
+# 1) Загружаем БД фраз из JSON, если он есть; иначе — резерв
+def load_phrase_db():
+    path = os.getenv("PHRASES_FILE", "phrases.json")  # можно переопределить переменной окружения
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert isinstance(data, list) and all(("he" in x and "ru" in x) for x in data)
+        return data
+    except Exception as e:
+        print(f"[phrases] using FALLBACK (reason: {e})")
+        return FALLBACK_PHRASES
+
+phrase_db = load_phrase_db()
+
+# 2) Одна и та же фраза на сегодня — для всех (по дате и TZ)
+def _today_idx():
+    today = datetime.now(tz).date().isoformat()
+    h = int(hashlib.sha1(today.encode("utf-8")).hexdigest(), 16)
+    return h % len(phrase_db)
+
+def phrase_of_today():
+    return phrase_db[_today_idx()]
+
+def build_pod_message(item):
+    return (
+        "☀️ בוקר טוב!\nВот тебе фраза дня:\n\n"
+        f"🗣 *{item['he']}*\n"
+        f"📘 Перевод: _{item['ru']}_\n"
+        f"💬 Пояснение: {item.get('note','—')}"
+    )
+
+# 3) Анти-дубли: не слать одной и той же пользователю дважды за день
+def _get_last_pod_date(user_id):
+    doc = db.collection("users").document(str(user_id)).get()
+    d = doc.to_dict() or {}
+    return d.get("last_pod")
+
+def _set_last_pod_date(user_id, date_iso):
+    db.collection("users").document(str(user_id)).set({"last_pod": date_iso}, merge=True)
+
+def send_phrase_of_the_day_now():
+    item = phrase_of_today()
+    today = datetime.now(tz).date().isoformat()
+    msg = build_pod_message(item)
+
+    recipients = ALLOWED_USERS  # у тебя уже грузится из Firestore
+    for user_id in recipients:
+        if _get_last_pod_date(user_id) == today:
+            continue
+        try:
+            bot.send_message(user_id, msg, parse_mode="Markdown")
+            _set_last_pod_date(user_id, today)
+        except Exception as e:
+            print(f"[pod] send failed for {user_id}: {e}")
+
+# 4) Планировщик: каждый день в 08:00 по Израилю
+def _schedule_next_8am():
+    now = datetime.now(tz)
+    next8 = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now >= next8:
+        next8 += timedelta(days=1)
+    delay = (next8 - now).total_seconds()
+
+    def _run():
+        try:
+            send_phrase_of_the_day_now()
+        finally:
+            _schedule_next_8am()  # перепланировать на завтра
+
+    threading.Timer(delay, _run).start()
+
+# Вызвать ОДИН раз при старте бота:
+_schedule_next_8am()
+
+# (опционально, для ручного пинка из чата)
+@bot.message_handler(commands=['pod'])
+def cmd_pod(m):
+    send_phrase_of_the_day_now()
+    bot.send_message(m.chat.id, "Фразу дня разослала всем (кто ещё не получал сегодня).")
 
 # 1) Резервные фразы на случай, если phrases.json не загрузится
 DEFAULT_PHRASES = [
