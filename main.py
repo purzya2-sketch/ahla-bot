@@ -237,6 +237,11 @@ AUDIO_TOO_LONG_MSG = (f"⚠️ Голосовое слишком длинное.
 DONATE_LINKS = [
     ("🍰 PayBox", "https://links.payboxapp.com/FqQZPo2wfWb"),
 ]
+# где искать картинку для Bit
+BIT_QR_IMAGE = (
+    os.getenv("BIT_QR_LOCAL_PATH")
+    or os.path.join(os.path.dirname(__file__), "bit_qr.jpg")
+)
 
 def _usage_doc_ref(user_id: int, date_iso: str):
     return db.collection("usage").document(f"{user_id}_{date_iso}")
@@ -663,13 +668,20 @@ def cb_quiz(c):
             bot.send_message(c.message.chat.id, final, parse_mode="Markdown", reply_markup=_again_keyboard())
 
 # ===== Донаты =====
+
+# где лежит картинка QR для Bit
+BIT_QR_IMAGE = (
+    os.getenv("BIT_QR_LOCAL_PATH")
+    or os.path.join(os.path.dirname(__file__), "bit_qr.jpg")
+)
+
 @bot.message_handler(commands=['donate'])
 def cmd_donate(m):
     if not check_access(m.from_user.id):
         return bot.send_message(m.chat.id, "Извини, доступ ограничен 👮‍♀️")
     # Bit: шлём QR фотографией (положи файл рядом с кодом; назови bit_qr.jpg)
     try:
-        with open("bit_qr.jpg", "rb") as photo:
+        with open(BIT_QR_IMAGE, "rb") as photo:
             bot.send_photo(
                 m.chat.id, photo,
                 caption=("☕ Поддержать через *Bit* — отсканируй QR.\n"
@@ -792,7 +804,8 @@ user_translations = {}
 user_data = {}
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-@bot.message_handler(commands=['start','help'])
+# раньше было: @bot.message_handler(commands=['start','help'])
+@bot.message_handler(commands=['start'])
 def cmd_start(m):
     if not check_access(m.from_user.id):
         return bot.send_message(m.chat.id, "Извини, доступ ограничен 👮‍♀️")
@@ -809,6 +822,34 @@ def cmd_start(m):
         "• Лимиты смотри: /profile",
         reply_markup=kb
     )
+
+HELP_TEXT = (
+    "👋 Привет! Вот что умеет Botargem:\n\n"
+    "📝 *Перевод*\n"
+    "• Пришли сообщение на иврите — получишь перевод на русский\n"
+    "• Можно пересылать чужие сообщения или аудио\n\n"
+    "🧠 *Объяснения*\n"
+    "• Под переводом кнопка «Объяснить» — грамматика, сленг, примеры\n\n"
+    "🎮 *Игры*\n"
+    "• Мини-викторина: /quiz\n"
+    "• Твой счёт: /quizstats\n\n"
+    "☀️ Каждый день утром — «Фраза дня»\n"
+    "📜 Каждый вечер — «Факт дня»\n\n"
+    "⚖️ *Лимиты (без премиум)*\n"
+    "• 3 текста в день\n"
+    "• 3 аудио в день\n"
+    "• 1500 символов текста\n"
+    "• 180 секунд аудио\n"
+    "Посмотреть остаток: /profile\n\n"
+    "💎 *Premium*\n"
+    "• С премиум-статусом лимиты не действуют\n\n"
+    "💝 *Поддержка проекта*\n"
+    "• Донаты: /donate (Bit QR или PayBox)\n"
+)
+
+@bot.message_handler(commands=['help'])
+def cmd_help(m):
+    bot.send_message(m.chat.id, HELP_TEXT, parse_mode="Markdown")
 
 # ===== Профиль / лимиты =====
 def _fmt_bar(used: int, total: int, size: int = 10) -> str:
