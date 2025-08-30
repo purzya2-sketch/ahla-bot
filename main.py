@@ -851,7 +851,7 @@ HELP_TEXT = (
 @bot.message_handler(commands=['help'])
 def cmd_help(m):
     bot.send_message(m.chat.id, HELP_TEXT, parse_mode="Markdown")
-@bot.message_handler(commands=['rules', 'правила', 'תקנון'])
+@bot.message_handler(commands=['rules', 'правила'])
 def send_rules(m):
     rules_text = (
         "📜 Правила пользования ботом Botargem\n\n"
@@ -877,20 +877,18 @@ def send_rules(m):
         "Вопросы: t.me/BotargemBot"
     )
     bot.send_message(m.chat.id, rules_text, parse_mode="Markdown")
-@bot.message_handler(commands=['copyrights', 'זכויות'])
+@bot.message_handler(commands=['copyrights',])
 def send_copyrights(m):
     text = (
-        "🔒 Авторские права / זכויות יוצרים\n\n"
+        "🔒 Авторские права \n"
         "© 2025 Botargem. Все права защищены.\n"
         "© 2025 ‏Botargem. כל הזכויות שמורות.\n\n"
-        
         "RU:\n"
         "• Дизайн, тексты интерфейса, база фраз и логотип 🦉 — собственность автора.\n"
         "• Нельзя копировать или публиковать без разрешения.\n"
         "• Переводы можно использовать лично, но нельзя продавать как свой сервис.\n"
         "• Ваши сообщения/аудио остаются вашими; отправляя их, вы разрешаете обработку для перевода/объяснений.\n"
         "• Медиа в промо — с разрешением или по открытой лицензии.\n"
-        "• Контакт: botargem.copyrights@gmail.com\n\n"
         
         "HE:\n"
         "• העיצוב, הטקסטים, מאגר הביטויים והלוגו 🦉 הם קניין של היוצר.\n"
@@ -898,7 +896,6 @@ def send_copyrights(m):
         "• מותר שימוש אישי בתרגומים, אסור למכור כשירות משלכם.\n"
         "• התוכן שאתם שולחים (טקסט/אודיו) נשאר שלכם; בשליחתו אתם מאשרים שימוש לצורך תרגום/הסבר.\n"
         "• מדיה בפרומו — ברישיון מתאים או חופשי.\n"
-        "• פניות: botargem.copyrights@gmail.com"
     )
     bot.send_message(m.chat.id, text)
 
