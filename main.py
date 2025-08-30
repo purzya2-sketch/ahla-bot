@@ -96,6 +96,12 @@ def create_bot_with_retry():
     raise Exception("Не удалось создать бота после всех попыток")
 
 bot = create_bot_with_retry()
+VERSION = "botargem-3"
+
+@bot.message_handler(commands=['version'])
+def cmd_version(m):
+    bot.send_message(m.chat.id, f"Версия кода: {VERSION}")
+
 # Версия бота (для проверки деплоя)
 VERSION = "botargem-1"
 
