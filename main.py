@@ -182,7 +182,7 @@ def create_bot_with_retry():
 user_engine = {}  # chat_id -> "google" | "mymemory"
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-3"
+VERSION = "botargem-4"
 
 @bot.message_handler(commands=['version'])
 def cmd_version(m):
