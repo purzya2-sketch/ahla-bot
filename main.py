@@ -10,6 +10,65 @@ from firebase_admin import credentials, firestore
 import pytz
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import os, subprocess, tempfile
+
+def _tg_download_to_tmp(message):
+    """Скачивает voice/audio/document → возвращает путь к локальному файлу."""
+    if message.voice:
+        file_id = message.voice.file_id
+        ext = ".ogg"
+    elif message.audio:
+        file_id = message.audio.file_id
+        # WhatsApp часто .m4a
+        ext = os.path.splitext(message.audio.file_name or "")[1] or ".m4a"
+    elif message.document:
+        file_id = message.document.file_id
+        ext = os.path.splitext(message.document.file_name or "")[1] or ".bin"
+    else:
+        raise RuntimeError("Неизвестный тип аудио")
+
+    f = bot.get_file(file_id)
+    raw = bot.download_file(f.file_path)
+
+    fd, path = tempfile.mkstemp(prefix="audio_", suffix=ext)
+    os.close(fd)
+    with open(path, "wb") as out:
+        out.write(raw)
+    return path
+
+def _ensure_ogg(input_path):
+    """Если уже ogg/opus — вернём как есть. Иначе перекодируем в ogg 16kHz mono."""
+    low = input_path.lower()
+    if low.endswith(".ogg") or low.endswith(".oga"):
+        return input_path
+
+    out_path = os.path.splitext(input_path)[0] + ".ogg"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", input_path, "-ar", "16000", "-ac", "1", "-c:a", "libopus", out_path],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    return out_path
+def process_audio(message):
+    chat_id = message.chat.id
+    try:
+        # 1) скачали voice/audio/document
+        local_file = _tg_download_to_tmp(message)
+        # 2) если нужно, перегнали в ogg
+        file_for_stt = _ensure_ogg(local_file)
+
+        # 3) отправили в OpenAI на расшифровку
+        with open(file_for_stt, "rb") as f:
+            tr = client.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=f
+            )
+        text = getattr(tr, "text", str(tr)) or "(пусто)"
+        bot.send_message(chat_id, f"📝 Расшифровка:\n{text}")
+
+    except Exception as e:
+        print("Ошибка аудио:", e)
+        bot.send_message(chat_id, "⚠️ Ошибка при расшифровке аудио.")
+
 
 # ===== БАЗОВЫЕ НАСТРОЙКИ =====
 load_dotenv()
@@ -195,6 +254,17 @@ else:
     app = firebase_admin.get_app()
 db = firestore.client(app=app)
 print(f"🔥 Firebase подключен: app={app.name}")
+# ===== USERS: автокарточка и подписки по умолчанию =====
+def _ensure_user(user):
+    uid = str(user.id)
+    db.collection("users").document(uid).set({
+        "username": user.username or "",
+        "first_name": user.first_name or "",
+        "last_name": user.last_name or "",
+        "sub_pod": True,    # Фраза дня: по умолчанию включена
+        "sub_fact": True,   # Факт дня: по умолчанию включён
+        "last_seen": datetime.utcnow().isoformat(),
+    }, merge=True)
 
 # ===== ДОСТУП: только ID из allowed_users =====
 ALLOWED_USERS = set()
@@ -210,7 +280,9 @@ def load_allowed_users():
 load_allowed_users()
 
 def check_access(user_id:int) -> bool:
-    return bool(ALLOWED_USERS) and (user_id in ALLOWED_USERS)
+    # Открываем бота для всех пользователей.
+    # ALLOWED_USERS дальше используем только для рассылок (фраза/факт дня).
+    return True
 
 # ===== Админ: владелец (только ты) =====
 # можно задать OWNER_ID через переменную окружения; иначе возьмём «первого» из allowed_users
@@ -412,7 +484,12 @@ def send_phrase_of_the_day_now():
     item = phrase_of_today()
     today = datetime.now(tz).date().isoformat()
     msg = build_pod_message(item)
-    recipients = ALLOWED_USERS
+        # Все пользователи, у кого включена подписка sub_pod
+    try:
+        recipients = [int(doc.id) for doc in db.collection("users").where("sub_pod", "==", True).stream()]
+    except Exception as e:
+        print(f"[pod] recipients err: {e}")
+        recipients = []
     for user_id in recipients:
         if _get_last_pod_date(user_id) == today:
             continue
@@ -488,7 +565,13 @@ def send_fact_of_the_day_now():
     item = _random_fact()
     today = datetime.now(tz).date().isoformat()
     msg = build_fact_message(item)
-    recipients = ALLOWED_USERS
+        # Все пользователи, у кого включена подписка sub_fact
+    try:
+        recipients = [int(doc.id) for doc in db.collection("users").where("sub_fact", "==", True).stream()]
+    except Exception as e:
+        print(f"[fact] recipients err: {e}")
+        recipients = []
+
     for user_id in recipients:
         if _get_last_fact_date(user_id) == today:
             continue
@@ -807,11 +890,11 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 # раньше было: @bot.message_handler(commands=['start','help'])
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
-    if not check_access(m.from_user.id):
-        return bot.send_message(m.chat.id, "Извини, доступ ограничен 👮‍♀️")
+    _ensure_user(m.from_user)  # <= добавим функцию ниже
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton("/quiz"), KeyboardButton("/quizstats"))
     kb.row(KeyboardButton("/id"), KeyboardButton("/profile"))
+    kb.row(KeyboardButton("/subs"))  # кнопка подписок в меню
     bot.send_message(
         m.chat.id,
         "Привет! Я перевожу и объясняю иврит.\n"
@@ -934,6 +1017,8 @@ def cmd_profile(m):
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
+    _ensure_user(message.from_user)  # 👈 ДОБАВЛЕНО: первая строка — записываем/обновляем пользователя
+
     if not check_access(message.from_user.id):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
         return
@@ -968,14 +1053,23 @@ def handle_text(message):
         print(f"Ошибка при переводе: {e}")
         bot.send_message(message.chat.id, "Ошибка при переводе 🫣")
 
-@bot.message_handler(content_types=['voice', 'audio'])
+
+@bot.message_handler(content_types=['voice', 'audio', 'document'])
 def handle_voice(message):
+    _ensure_user(message.from_user)  # <<< добавили: записываем/обновляем пользователя
+
+    # (если check_access уже возвращает True — этот блок можно оставить, он не мешает)
     if not check_access(message.from_user.id):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
         return
+
     if message.forward_from or message.forward_from_chat:
         user_data[message.chat.id] = {'forwarded_audio': message}
-        bot.send_message(message.chat.id, "📩 Пересланное аудио. Хотите расшифровать и перевести?", reply_markup=get_yes_no_keyboard())
+        bot.send_message(
+            message.chat.id,
+            "📩 Пересланное аудио. Хотите расшифровать и перевести?",
+            reply_markup=get_yes_no_keyboard()
+        )
         return
 
     user_id = message.from_user.id
@@ -1000,49 +1094,81 @@ def handle_voice(message):
 
     process_audio(message)
 
-def process_audio(message):
-    try:
-        file_id = message.voice.file_id if message.content_type == 'voice' else message.audio.file_id
-        file_info = bot.get_file(file_id)
-        data = bot.download_file(file_info.file_path)
-        tmp_path = "voice.ogg"
-        with open(tmp_path, "wb") as f:
-            f.write(data)
 
-        with open(tmp_path, "rb") as audio_file:
-            try:
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file, language="he"
-                )
-            except Exception as api_err:
-                if "overloaded" in str(api_err).lower():
-                    bot.send_message(message.chat.id, "🤖 Сейчас сервер перегружен, попробуй чуть позже.")
-                else:
-                    bot.send_message(message.chat.id, "⚠️ Ошибка при расшифровке аудио.")
-                return
+            # ===== Подписки: команды и UI =====
+def _subs_kb(sub_pod: bool, sub_fact: bool):
+    kb = InlineKeyboardMarkup()
+    if sub_pod:
+        kb.add(InlineKeyboardButton("☀️ Фраза дня: выключить", callback_data="subs:pod:off"))
+    else:
+        kb.add(InlineKeyboardButton("☀️ Фраза дня: включить",  callback_data="subs:pod:on"))
+    if sub_fact:
+        kb.add(InlineKeyboardButton("📜 Факт дня: выключить", callback_data="subs:fact:off"))
+    else:
+        kb.add(InlineKeyboardButton("📜 Факт дня: включить",  callback_data="subs:fact:on"))
+    return kb
 
-        hebrew_text = transcript.text
-        translated_text = translate_text(hebrew_text)
-        user_translations[message.chat.id] = hebrew_text
-        bot.send_message(
-            message.chat.id,
-            f"🗣 Распознанный текст:\n_{hebrew_text}_\n\n📘 Перевод:\n*{translated_text}*",
-            parse_mode='Markdown',
-            reply_markup=get_keyboard()
-        )
-        add_history(message.from_user.id, "audio", hebrew_text, translated_text)
-    except Exception as e:
-        print(f"Ошибка с аудио: {e}")
-        bot.send_message(message.chat.id, "Не удалось обработать аудио 😢")
-    finally:
-        if os.path.exists("voice.ogg"):
-            os.remove("voice.ogg")
+@bot.message_handler(commands=['subs','subscribe','подписка'])
+def cmd_subs(m):
+    _ensure_user(m.from_user)
+    doc = db.collection("users").document(str(m.from_user.id)).get()
+    d = doc.to_dict() or {}
+    sub_pod  = bool(d.get("sub_pod", True))
+    sub_fact = bool(d.get("sub_fact", True))
+    text = (
+        "🔔 Управление подписками\n"
+        f"• ☀️ Фраза дня: {'включена' if sub_pod else 'выключена'}\n"
+        f"• 📜 Факт дня: {'включён' if sub_fact else 'выключен'}\n\n"
+        "Нажми кнопку, чтобы переключить."
+    )
+    bot.send_message(m.chat.id, text, reply_markup=_subs_kb(sub_pod, sub_fact))
+
+@bot.message_handler(commands=['podon','podoff','facton','factoff'])
+def cmd_subs_short(m):
+    _ensure_user(m.from_user)
+    cmd = m.text.lstrip('/').lower()
+    field = 'sub_pod' if 'pod' in cmd else 'sub_fact'
+    val = cmd.endswith('on')
+    db.collection("users").document(str(m.from_user.id)).set({field: val}, merge=True)
+    tit = "Фраза дня" if field == 'sub_pod' else "Факт дня"
+    bot.send_message(m.chat.id, f"✅ {tit}: {'включено' if val else 'выключено'}")
+
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     if not check_access(call.from_user.id):
         return bot.answer_callback_query(call.id, "Нет доступа")
     bot.answer_callback_query(call.id)
+        # --- Подписки: обработка кнопок ---
+    if call.data.startswith("subs:"):
+        try:
+            _, kind, action = call.data.split(":")  # kind in {"pod","fact"}, action in {"on","off"}
+            field = "sub_pod" if kind == "pod" else "sub_fact"
+            val = (action == "on")
+            uid = str(call.from_user.id)
+            db.collection("users").document(uid).set({field: val}, merge=True)
+
+            doc = db.collection("users").document(uid).get()
+            d = doc.to_dict() or {}
+            sub_pod  = bool(d.get("sub_pod", True))
+            sub_fact = bool(d.get("sub_fact", True))
+
+            txt = (
+                "🔔 Подписки обновлены\n"
+                f"• ☀️ Фраза дня: {'включена' if sub_pod else 'выключена'}\n"
+                f"• 📜 Факт дня: {'включён' if sub_fact else 'выключен'}"
+            )
+            try:
+                bot.edit_message_text(
+                    txt, call.message.chat.id, call.message.message_id,
+                    reply_markup=_subs_kb(sub_pod, sub_fact)
+                )
+            except Exception:
+                bot.send_message(call.message.chat.id, txt, reply_markup=_subs_kb(sub_pod, sub_fact))
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"⚠️ Не удалось обновить подписку: {e}")
+        return
+
     if call.data == "explain":
         text = user_translations.get(call.message.chat.id)
         if not text:
