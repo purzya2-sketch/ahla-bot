@@ -921,7 +921,6 @@ def cmd_start(m):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton("/quiz"), KeyboardButton("/quizstats"))
     kb.row(KeyboardButton("/id"), KeyboardButton("/profile"))
-    kb.row(KeyboardButton("/subs"))  # кнопка подписок в меню
     bot.send_message(
         m.chat.id,
         "Привет! Я перевожу и объясняю иврит.\n"
