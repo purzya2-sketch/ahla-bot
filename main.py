@@ -53,17 +53,40 @@ def process_audio(message):
     try:
         # 1) скачали voice/audio/document
         local_file = _tg_download_to_tmp(message)
-        # 2) если нужно, перегнали в ogg
+        # 2) привели к ogg 16kHz mono (если нужно)
         file_for_stt = _ensure_ogg(local_file)
 
-        # 3) отправили в OpenAI на расшифровку
+        # 3) распознали речь → текст на иврите (или другом)
         with open(file_for_stt, "rb") as f:
             tr = client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",
                 file=f
             )
-        text = getattr(tr, "text", str(tr)) or "(пусто)"
-        bot.send_message(chat_id, f"📝 Расшифровка:\n{text}")
+        text = getattr(tr, "text", "").strip()
+
+        if not text:
+            bot.send_message(chat_id, "⚠️ Не удалось распознать речь.")
+            return
+
+        # 4) перевод распознанного текста
+        translated = translate_text(text)
+
+        # 5) сохранить текст для кнопки «🧠 Объяснить» и «🔁 Новый перевод»
+        user_translations[chat_id] = text
+        user_engine[chat_id] = "google"  # как и в текстовом хэндлере
+
+        # 6) показать всё одним сообщением + кнопки
+        msg = (
+            f"📝 Расшифровка:\n{text}\n\n"
+            f"📘 Перевод:\n*{translated}*"
+        )
+        bot.send_message(chat_id, msg, parse_mode="Markdown", reply_markup=get_keyboard())
+
+        # 7) история
+        try:
+            add_history(message.from_user.id, "audio", text, translated)
+        except Exception as e:
+            print("[history audio] err:", e)
 
     except Exception as e:
         print("Ошибка аудио:", e)
@@ -154,13 +177,6 @@ def create_bot_with_retry():
             time.sleep(5)
     raise Exception("Не удалось создать бота после всех попыток")
 
-bot = create_bot_with_retry()
-VERSION = "botargem-3"
-
-@bot.message_handler(commands=['version'])
-def cmd_version(m):
-    bot.send_message(m.chat.id, f"Версия кода: {VERSION}")
-
 # Версия бота (для проверки деплоя)
 VERSION = "botargem-1"
 
@@ -170,6 +186,12 @@ def cmd_version(m):
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
+
+@bot.message_handler(commands=['access'])
+def cmd_access(m):
+    ok = check_access(m.from_user.id)
+    bot.send_message(m.chat.id, f"ACCESS={ok}  user_id={m.from_user.id}\nVERSION={VERSION}")
+
 
 # ===== Переводчики =====
 from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -279,10 +301,14 @@ def load_allowed_users():
 
 load_allowed_users()
 
-def check_access(user_id:int) -> bool:
-    # Открываем бота для всех пользователей.
-    # ALLOWED_USERS дальше используем только для рассылок (фраза/факт дня).
+def check_access(user_id: int) -> bool:
+    # Разрешаем всем + логируем, чтобы точно видеть в Render Logs
+    try:
+        print(f"[access] ALLOW user={user_id}")
+    except Exception:
+        pass
     return True
+
 
 # ===== Админ: владелец (только ты) =====
 # можно задать OWNER_ID через переменную окружения; иначе возьмём «первого» из allowed_users
