@@ -177,15 +177,16 @@ def create_bot_with_retry():
             time.sleep(5)
     raise Exception("Не удалось создать бота после всех попыток")
 
-# Версия бота (для проверки деплоя)
-VERSION = "botargem-1"
+
+# какой движок перевода использовали в последний раз для этого чата
+user_engine = {}  # chat_id -> "google" | "mymemory"
+# === Создаём бота и объявляем версию ===
+bot = create_bot_with_retry()
+VERSION = "botargem-3"
 
 @bot.message_handler(commands=['version'])
 def cmd_version(m):
     bot.send_message(m.chat.id, f"Версия кода: {VERSION}")
-
-# какой движок перевода использовали в последний раз для этого чата
-user_engine = {}  # chat_id -> "google" | "mymemory"
 
 @bot.message_handler(commands=['access'])
 def cmd_access(m):
