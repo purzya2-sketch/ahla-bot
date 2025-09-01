@@ -8,7 +8,12 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pytz
-from datetime import datetime, timedelta
+# ===== ИМПОРТЫ =====
+from datetime import datetime, timedelta, timezone
+# ... у тебя уже есть:
+# firebase_admin, firestore = firebase_admin.firestore
+# tz = pytz.timezone("Asia/Jerusalem")  # если нет — добавь такую строку
+ALLOWED_ADMINS = {1037123191}   # сюда свой ID и ID подруг/дочери, если надо
 from dotenv import load_dotenv
 import os, subprocess, tempfile
 
@@ -180,9 +185,36 @@ def create_bot_with_retry():
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
+
+
+def _count_users_total():
+    db = firestore.client()
+    users_ref = db.collection("users")
+    return sum(1 for _ in users_ref.stream())
+
+
+def _count_active_since(hours: int):
+    db = firestore.client()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.collection("users").where("last_seen", ">=", cutoff.isoformat())
+    return sum(1 for _ in q.stream())
+
+
+def _count_today():
+    db = firestore.client()
+    now_il = datetime.now(tz)
+    start_il = now_il.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = start_il.astimezone(timezone.utc).isoformat()
+    q = db.collection("users").where("last_seen", ">=", start_utc)
+    return sum(1 for _ in q.stream())
+
+
+def _is_admin(user_id: int) -> bool:
+    return int(user_id) in ALLOWED_ADMINS
+
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-4"
+VERSION = "botargem-5"
 
 @bot.message_handler(commands=['version'])
 def cmd_version(m):
@@ -806,6 +838,7 @@ def cmd_donate(m):
     for title, url in DONATE_LINKS:
         kb.add(InlineKeyboardButton(text=title, url=url))
     bot.send_message(m.chat.id, "Или поддержать через PayBox 👇", reply_markup=kb)
+    
 
 # ===== История переводов =====
 def _history_ref(user_id: int):
@@ -840,6 +873,38 @@ def cmd_history(m):
         bot.send_message(m.chat.id, "\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         bot.send_message(m.chat.id, f"⚠️ Не удалось получить историю: {e}")
+@bot.message_handler(commands=['stats'])
+def cmd_stats(m):
+    # доступ только для админов
+    if int(m.from_user.id) not in ALLOWED_ADMINS:
+        return bot.send_message(m.chat.id, "⛔ Доступ только для администратора.")
+
+    try:
+        users_ref = db.collection("users")
+
+        # Всего пользователей (число документов в коллекции users)
+        total = sum(1 for _ in users_ref.stream())
+
+        # Активны сегодня (с 00:00 по Asia/Jerusalem)
+        now_il = datetime.now(tz)
+        start_il = now_il.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc_iso = start_il.astimezone(timezone.utc).isoformat()
+        today = sum(1 for _ in users_ref.where("last_seen", ">=", start_utc_iso).stream())
+
+        # Активны за 7 дней
+        cutoff_utc_iso = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        week = sum(1 for _ in users_ref.where("last_seen", ">=", cutoff_utc_iso).stream())
+
+        text = (
+            "📊 *Статистика бота*\n"
+            f"• Всего пользователей: *{total}*\n"
+            f"• Активны сегодня: *{today}*\n"
+            f"• Активны за 7 дней: *{week}*"
+        )
+        bot.send_message(m.chat.id, text, parse_mode="Markdown")
+
+    except Exception as e:
+        bot.send_message(m.chat.id, f"⚠️ Ошибка статистики: {e}")
 
 # ===== PREMIUM команды (админские действия — только OWNER) =====
 @bot.message_handler(commands=['premium'])

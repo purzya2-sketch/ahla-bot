@@ -1,0 +1,7 @@
+# Обновление бота (любые изменения)
+
+git add .
+git commit -m "update"
+git push origin main
+
+# Потом в Render -> Manual Deploy -> Clear cache & Deploy
