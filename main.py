@@ -1,5 +1,5 @@
 # --- ИМПОРТЫ (коротко и без дублей) ---
-import os, sys, time, threading, signal, random, re, json, hashlib
+import os, sys, time, threading, signal, random, re, json, hashlib, string
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import openai
@@ -8,6 +8,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pytz
+
 # ===== ИМПОРТЫ =====
 from datetime import datetime, timedelta, timezone
 # ... у тебя уже есть:
@@ -214,7 +215,7 @@ def _is_admin(user_id: int) -> bool:
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-5"
+VERSION = "botargem-6"
 
 @bot.message_handler(commands=['version'])
 def cmd_version(m):
@@ -260,6 +261,39 @@ def translate_with_engine(text: str, engine: str) -> tuple[str, str]:
         except Exception as e2:
             print(f"[translate_with_engine] оба упали: {e} / {e2}")
             return "⚠️ Ошибка перевода", engine
+        
+# === Фильтр «осмысленного» текста ===
+HEB = r"\u0590-\u05FF"
+LAT = r"A-Za-z"
+CYR = r"А-Яа-яЁё"
+LETTER_RE = re.compile(fr"[{HEB}{LAT}{CYR}]")
+PUNCT = set(string.punctuation + "…—–«»”“’‚·•")
+
+def _strip_noise(s: str) -> str:
+    # убираем невидимые zero-width и пробелы по краям
+    return (s or "").replace("\u200d", "").replace("\u200c", "").strip()
+
+def _looks_like_only_punct_or_emoji(s: str) -> bool:
+    # нет ни одной буквы, и все символы — не буквенно-цифровые (пунктуация/эмодзи)
+    no_letters = LETTER_RE.search(s) is None
+    only_non_alnum = all((not ch.isalnum()) for ch in s)
+    return no_letters and only_non_alnum
+
+def is_meaningful_text(s: str) -> bool:
+    s = _strip_noise(s)
+    if not s:
+        return False
+    if s.startswith("/"):           # команды пропускаем
+        return True
+    if len(s) == 1 and not s.isalnum():
+        return False                # одиночная точка и т.п.
+    if _looks_like_only_punct_or_emoji(s):
+        return False
+    # односимвольные «слова» без букв (например, "1", "#") — отклоняем
+    if len(s) < 2 and LETTER_RE.search(s) is None:
+        return False
+    return True
+
 
 # ---- офлайн-фолбэк для "Объяснить" ----
 IDOMS = {
@@ -854,6 +888,61 @@ def add_history(user_id:int, kind:str, source:str, result:str):
         })
     except Exception as e:
         print("[history] err:", e)
+def _forward_receipt_to_owner(chat_id: int, from_user, text_summary: str, photo_message=None):
+    uid = from_user.id
+    uname = from_user.username or "—"
+    header = f"📩 Чек на премиум (PayBox)\nID: {uid}\nUsername: @{uname}\n{('-'*20)}\n{text_summary}"
+    if OWNER_ID:
+        try:
+            if photo_message:
+                # переслать фото
+                bot.forward_message(OWNER_ID, photo_message.chat.id, photo_message.message_id)
+            bot.send_message(OWNER_ID, header)
+        except Exception as e:
+            print(f"[receipt->owner {OWNER_ID}] err:", e)
+
+def _accept_receipt_message(message) -> bool:
+    """Пытается принять сообщение как чек PayBox. Возвращает True, если принято."""
+    state = receipt_state.get(message.chat.id)
+    if not state or state.get("provider") != "paybox":
+        return False  # сейчас мы не ждём чек от этого чата
+
+    # TEXT-вариант: ссылка/текст с суммой
+    if message.content_type == 'text':
+        txt = (message.text or "").strip()
+        has_link = bool(PAYBOX_URL_RE.search(txt))
+        amount = AMOUNT_RE.search(txt)
+        if has_link or amount:
+            parts = []
+            if has_link:
+                parts.append(f"Ссылка: {PAYBOX_URL_RE.search(txt).group(0)}")
+            if amount:
+                parts.append(f"Сумма: {amount.group(1)} {amount.group(2)}")
+            summary = "\n".join(parts) or txt[:200]
+            _forward_receipt_to_owner(message.chat.id, message.from_user, summary)
+            bot.send_message(message.chat.id, "✅ Спасибо! Чек отправлен администратору. Премиум активируем в течение суток.")
+            receipt_state.pop(message.chat.id, None)
+            return True
+        else:
+            bot.send_message(message.chat.id, "❌ Не похоже на чек PayBox. Пришлите ссылку PayBox или скриншот с подписью (сумма + дата).")
+            return True  # обработано (но не принято)
+
+    # PHOTO-вариант: скрин с подписью
+    if message.content_type == 'photo':
+        caption = (message.caption or "").strip()
+        amount = AMOUNT_RE.search(caption)
+        if not amount:
+            bot.send_message(message.chat.id, "ℹ️ Добавьте подпись к скрину: *сумма* и *дата/время*. Пример: `15₪, 02.09 10:35`", parse_mode="Markdown")
+            return True  # обработано
+        summary = f"Скриншот PayBox\nСумма: {amount.group(1)} {amount.group(2)}\nПодпись: {caption[:120]}"
+        _forward_receipt_to_owner(message.chat.id, message.from_user, summary, photo_message=message)
+        bot.send_message(message.chat.id, "✅ Спасибо! Чек отправлен администратору. Премиум активируем в течение суток.")
+        receipt_state.pop(message.chat.id, None)
+        return True
+
+    # другие типы — отклоняем
+    bot.send_message(message.chat.id, "Я могу принять *ссылку PayBox* или *скриншот* (с подписью: сумма + дата).", parse_mode="Markdown")
+    return True
 
 @bot.message_handler(commands=['history'])
 def cmd_history(m):
@@ -914,34 +1003,25 @@ def cmd_premium(m):
     pro = is_premium(m.from_user.id)
     status = "✅ Активен" if pro else "❌ Не активен"
     msg = (
-        f"⭐ *Botargem Premium*\n"
-        f"Статус: {status}\n\n"
-        "Что даёт:\n"
-        "• Без лимитов\n"
-        "• Длиннее сообщения и аудио\n\n"
-        "Цена: 15₪/мес (PayBox).\n"
-        "После оплаты пришлите чек фотографией прямо сюда — бот отправит его администратору."
+        f"⭐ *Botargem Premium*\nСтатус: {status}\n\n"
+        "Цена: 15₪/мес (PayBox).\n\n"
+        "После оплаты нажмите «Отправить чек» и перешлите ссылку PayBox *или* скриншот *с подписью* (сумма + дата/время)."
     )
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("Оплатить в PayBox", "https://links.payboxapp.com/FqQZPo2wfWb"))
+    kb.add(InlineKeyboardButton("📩 Отправить чек PayBox", callback_data="rcpt:paybox"))
     bot.send_message(m.chat.id, msg, parse_mode="Markdown", reply_markup=kb)
 
+
 @bot.message_handler(content_types=['photo'])
-def handle_check(m):
-    if m.chat.type != "private":
+def handle_photo(m):
+    # Если ждём чек — пробуем принять как чек
+    if receipt_state.get(m.chat.id):
+        _accept_receipt_message(m)
         return
-    if not check_access(m.from_user.id):
-        return bot.send_message(m.chat.id, "Извини, доступ ограничен 👮‍♀️")
-    uid = m.from_user.id
-    uname = m.from_user.username or "—"
-    # переслать чек только владельцу
-    if OWNER_ID:
-        try:
-            bot.forward_message(OWNER_ID, m.chat.id, m.message_id)
-            bot.send_message(OWNER_ID, f"📩 Чек на премиум\nID: {uid}\nUsername: @{uname}")
-        except Exception as e:
-            print(f"[check->owner {OWNER_ID}] err:", e)
-    bot.send_message(m.chat.id, "✅ Спасибо! Чек отправлен администратору. Премиум активируем в течение суток.")
+    # Не ждём чек: мягко направим в /premium
+    bot.send_message(m.chat.id, "Чтобы отправить чек, нажмите /premium → «📩 Отправить чек PayBox» и следуйте инструкции.")
+
 
 @bot.message_handler(commands=['setpremium'])
 def cmd_setpremium(m):
@@ -973,6 +1053,12 @@ def get_yes_no_keyboard():
         InlineKeyboardButton("❌ Нет", callback_data="cancel")
     )
     return markup
+# === Состояние отправки чека ===
+receipt_state = {}  # chat_id -> {"provider": "paybox", "ts": datetime.utcnow().isoformat()}
+
+# PayBox: распознаём ссылку или «признаки» в тексте
+PAYBOX_URL_RE = re.compile(r"https?://\S*payboxapp\.com/\S+", re.I)
+AMOUNT_RE = re.compile(r"(\d+[.,]?\d*)\s*(₪|шек|nis|ש״ח)", re.I)  # число + валюта/₪
 
 # ===== Обработчики сообщений =====
 user_translations = {}
@@ -1108,7 +1194,7 @@ def cmd_profile(m):
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    _ensure_user(message.from_user)  # 👈 ДОБАВЛЕНО: первая строка — записываем/обновляем пользователя
+    _ensure_user(message.from_user)
 
     if not check_access(message.from_user.id):
         bot.send_message(message.chat.id, "Извини, доступ ограничен 👮‍♀️")
@@ -1119,9 +1205,17 @@ def handle_text(message):
         user_data[message.chat.id] = {'forwarded_text': message.text.strip()}
         bot.send_message(message.chat.id, "📩 Пересланное сообщение. Хотите перевести?", reply_markup=get_yes_no_keyboard())
         return
+    if receipt_state.get(message.chat.id):
+        if _accept_receipt_message(message):
+            return
 
     user_id = message.from_user.id
     orig = (message.text or "").strip()
+
+    # 🔹 НОВАЯ ПРОВЕРКА — отсекаем «точки/эмодзи/!!!»
+    if not any(ch.isalpha() for ch in orig):
+        bot.send_message(message.chat.id, "🤔 Отправьте, пожалуйста, слово или фразу для перевода.")
+        return
 
     # 1) по количеству
     if not can_use(user_id, "text"):
@@ -1138,11 +1232,17 @@ def handle_text(message):
         user_translations[message.chat.id] = orig
         translated_text = translate_text(orig)
         user_engine[message.chat.id] = "google"
-        bot.send_message(message.chat.id, f"📘 Перевод:\n*{translated_text}*", reply_markup=get_keyboard(), parse_mode='Markdown')
+        bot.send_message(
+            message.chat.id,
+            f"📘 Перевод:\n*{translated_text}*",
+            reply_markup=get_keyboard(),
+            parse_mode='Markdown'
+        )
         add_history(message.from_user.id, "text", orig, translated_text)
     except Exception as e:
         print(f"Ошибка при переводе: {e}")
         bot.send_message(message.chat.id, "Ошибка при переводе 🫣")
+
 
 
 @bot.message_handler(content_types=['voice', 'audio', 'document'])
@@ -1230,6 +1330,18 @@ def handle_callback(call):
     if not check_access(call.from_user.id):
         return bot.answer_callback_query(call.id, "Нет доступа")
     bot.answer_callback_query(call.id)
+        # --- Чеки / квитанции ---
+    if call.data == "rcpt:paybox":
+        receipt_state[call.message.chat.id] = {"provider": "paybox", "ts": datetime.utcnow().isoformat()}
+        bot.send_message(
+            call.message.chat.id,
+            "🔎 Отправьте, пожалуйста, *ссылку PayBox* на оплату ИЛИ *скриншот*.\n"
+            "Если отправляете скрин — добавьте подпись: *сумма* и *дата/время*.\n\n"
+            "Пример подписи: `15₪, 02.09 10:35`",
+            parse_mode="Markdown"
+        )
+        return
+
         # --- Подписки: обработка кнопок ---
     if call.data.startswith("subs:"):
         try:
