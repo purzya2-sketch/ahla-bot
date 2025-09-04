@@ -1,5 +1,5 @@
 # --- ИМПОРТЫ (коротко и без дублей) ---
-import os, sys, time, threading, signal, random, re, json, hashlib, string
+import os, sys, time, threading, signal, random, re, json, string
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import openai
 import telebot
@@ -609,14 +609,6 @@ def load_phrase_db():
 
 phrase_db = load_phrase_db()
 
-def _today_idx():
-    today = datetime.now(tz).date().isoformat()
-    h = int(hashlib.sha1(today.encode("utf-8")).hexdigest(), 16)
-    return h % len(phrase_db)
-
-def phrase_of_today():
-    return phrase_db[_today_idx()]
-
 def build_pod_message(item):
     return (
         "☀️ בוקר טוב!\nВот тебе фраза дня:\n\n"
@@ -624,6 +616,35 @@ def build_pod_message(item):
         f"📘 Перевод: _{item['ru']}_\n"
         f"💬 Пояснение: {item.get('note', '—')}"
     )
+# === РОТАЦИИ (циклический выбор без повторов) ===
+META_COL = "meta"
+
+def _next_index_txn(doc_path: str, field_name: str, modulo: int) -> int:
+    """
+    Атомарно увеличивает индекс по кругу в Firestore.
+    Хранит индекс в документе doc_path (например 'meta/phrases' или 'meta/facts').
+    """
+    db = firestore.client()
+    doc_ref = db.document(doc_path)
+
+    @firestore.transactional
+    def _run(tx):
+        snap = tx.get(doc_ref)
+        data = snap.to_dict() or {}
+        last = int(data.get(field_name, -1))
+        next_idx = 0 if modulo == 0 else (last + 1) % modulo
+        tx.set(doc_ref, {field_name: next_idx}, merge=True)
+        return next_idx
+
+    return _run(firestore.Transaction(db))
+
+def get_next_phrase_item():
+    """
+    Берёт следующую фразу из phrase_db по кругу.
+    Индекс хранится в meta/phrases.last_index
+    """
+    idx = _next_index_txn("meta/phrases", "last_index", len(phrase_db))
+    return phrase_db[idx]
 
 def _get_last_pod_date(user_id):
     doc = db.collection("users").document(str(user_id)).get()
@@ -634,7 +655,7 @@ def _set_last_pod_date(user_id, date_iso):
     db.collection("users").document(str(user_id)).set({"last_pod": date_iso}, merge=True)
 
 def send_phrase_of_the_day_now():
-    item = phrase_of_today()
+    item = get_next_phrase_item()
     today = datetime.now(tz).date().isoformat()
     msg = build_pod_message(item)
     
@@ -688,16 +709,37 @@ def _load_facts_file():
     return FALLBACK_FACTS
 
 FACTS_DB = _load_facts_file()
-
-def _random_fact():
+def _load_facts_list():
+    """
+    Пробуем взять факты из коллекции Firestore 'facts' (каждый документ: {he, ru, note}),
+    если пусто/ошибка — берём локальные FACTS_DB.
+    """
     try:
         docs = list(db.collection("facts").stream())
-        if docs:
-            d = random.choice(docs).to_dict()
-            return {"he": d.get("he", ""), "ru": d.get("ru", ""), "note": d.get("note", "")}
+        items = []
+        for d in docs:
+            x = d.to_dict() or {}
+            he = x.get("he", "").strip()
+            ru = x.get("ru", "").strip()
+            note = x.get("note", "")
+            if he and ru:
+                items.append({"he": he, "ru": ru, "note": note})
+        if items:
+            return items
     except Exception as e:
-        print(f"[facts] FS err: {e}")
-    return random.choice(FACTS_DB)
+        print(f"[facts] Firestore read err: {e}")
+    return FACTS_DB
+
+FACTS_LIST = _load_facts_list()
+
+def get_next_fact_item():
+    """
+    Берёт следующий факт по кругу из FACTS_LIST.
+    Индекс хранится в meta/facts.last_index
+    """
+    idx = _next_index_txn("meta/facts", "last_index", len(FACTS_LIST))
+    return FACTS_LIST[idx]
+
 
 def build_fact_message(item):
     msg = f"📜 *Факт дня*\n\n🗣 {item.get('he', '')}\n📘 Перевод: {item.get('ru', '')}"
@@ -714,7 +756,7 @@ def _set_last_fact_date(user_id, date_iso):
     db.collection("users").document(str(user_id)).set({"last_fact": date_iso}, merge=True)
 
 def send_fact_of_the_day_now():
-    item = _random_fact()
+    item = get_next_fact_item()
     today = datetime.now(tz).date().isoformat()
     msg = build_fact_message(item)
     
