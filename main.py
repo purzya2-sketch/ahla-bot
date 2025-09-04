@@ -972,20 +972,6 @@ def cmd_access(m):
 @bot.message_handler(commands=['id'])
 def send_user_id(message):
     bot.send_message(message.chat.id, f"👤 Твой Telegram ID: {message.from_user.id}", parse_mode='Markdown')
-
-@bot.message_handler(commands=['start'])
-def cmd_start(m):
-    _ensure_user(m.from_user)
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("/quiz"), KeyboardButton("/quizstats"))
-    kb.row(KeyboardButton("/id"), KeyboardButton("/profile"))
-    bot.send_message(
-        m.chat.id,
-        "Привет! Я перевожу и объясняю иврит.\n"
-        "Пришли *текст или аудио на иврите* — дам перевод.\n\n"
-        "🔽 Все разделы: /menu\n"
-        "© 2025 Botargem. Все права защищены"
-    )
 HELP_TEXT = (
     "👋 Привет! Я помогаю с ивритом.\n\n"
     "• Пришлите *текст или аудио на иврите* — переведу на русский\n"
@@ -994,6 +980,16 @@ HELP_TEXT = (
     "🔽 Разделы бота: /menu\n"
     "💝 Поддержка: /donate (Bit QR или PayBox)\n"
 )
+@bot.message_handler(commands=['start'])
+def cmd_start(m):
+    _ensure_user(m.from_user)
+    bot.send_message(
+        m.chat.id,
+        "👋Привет! Я перевожу и объясняю иврит.\n"
+        "📝Пришли *текст или аудио на иврите* — дам перевод.\n\n"
+        "🔽 Все разделы: /menu\n"
+        "© 2025 Botargem. Все права защищены"
+    )
 
 @bot.message_handler(commands=['help'])
 def cmd_help(m):
