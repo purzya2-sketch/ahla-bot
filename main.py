@@ -28,22 +28,6 @@ load_dotenv()
 
 ALLOWED_ADMINS = {1037123191}  # сюда свой ID и ID подруг/дочери, если надо
 tz = pytz.timezone('Asia/Jerusalem')
-ADMIN_COMMANDS = [
-    types.BotCommand("pod", "Ручная рассылка фразы дня"),
-    types.BotCommand("fact", "Ручная рассылка факта дня (/fact slang и т.п.)"),
-    types.BotCommand("setpremium", "Выдать премиум: /setpremium <id> <YYYY-MM-DD>"),
-    types.BotCommand("stats", "Статистика пользователей"),
-    types.BotCommand("access", "Проверка доступа и версии"),
-    types.BotCommand("version", "Версия кода"),
-    types.BotCommand("subs", "Подписки/рассылка"),
-]
-
-PUBLIC_COMMANDS = [
-    types.BotCommand("start", "Начать"),
-    types.BotCommand("help", "Что умеет бот"),
-    types.BotCommand("mymenu", "Мои доступные команды"),
-    types.BotCommand("donate", "Поддержать проект"),
-]
 
 # OpenAI
 from openai import (
