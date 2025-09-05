@@ -138,21 +138,21 @@ def create_bot_with_retry():
 bot = create_bot_with_retry()
 
 def setup_admin_commands():
-    # Меню по умолчанию — для всех
-    bot.set_my_commands(PUBLIC_COMMANDS)
+    # НЕ трогаем дефолт — им управляет BotFather
+    if os.getenv("SET_DEFAULT_COMMANDS", "0") == "1":
+        bot.set_my_commands(PUBLIC_COMMANDS)
 
-    # Расширенное меню — только в личке у админов
+    # Чат-специфичное меню для админов (перечень в ALLOWED_ADMINS)
     for admin_id in ALLOWED_ADMINS:
         try:
-            scope = types.BotCommandScopeChat(admin_id)  # меню видно только этому id в личном чате с ботом
+            scope = types.BotCommandScopeChat(admin_id)
             bot.set_my_commands(PUBLIC_COMMANDS + ADMIN_COMMANDS, scope=scope, language_code="ru")
         except Exception as e:
             print("set_my_commands for admin failed:", admin_id, e)
 
-if os.getenv("SET_COMMANDS_AT_STARTUP", "0") == "1":
-    setup_admin_commands()
 
-VERSION = "botargem-10"
+setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
+VERSION = "botargem-11"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -1353,7 +1353,7 @@ def cmd_donate(m):
     
     kb = InlineKeyboardMarkup()
     for title, url in DONATE_LINKS:
-        kb.add(InlineKeyboardButton("🍰 PayBox", url="https://links.payboxapp.com/FqQZPo2wfWb"))
+        kb.add(InlineKeyboardButton(text=title, url=url))
     bot.send_message(m.chat.id, "Или поддержать через PayBox 👇", reply_markup=kb)
 
 @bot.message_handler(commands=['history'])
