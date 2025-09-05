@@ -621,22 +621,28 @@ META_COL = "meta"
 
 def _next_index_txn(doc_path: str, field_name: str, modulo: int) -> int:
     """
-    Атомарно увеличивает индекс по кругу в Firestore.
-    Хранит индекс в документе doc_path (например 'meta/phrases' или 'meta/facts').
+    Атомарно крутит индекс по кругу в Firestore.
+    Совместимо с google-cloud-firestore >= 2.x.
     """
-    db = firestore.client()
+    if modulo <= 0:
+        return 0
+
     doc_ref = db.document(doc_path)
+    txn = db.transaction()
 
     @firestore.transactional
     def _run(tx):
-        snap = tx.get(doc_ref)
-        data = snap.to_dict() or {}
+        # ВАЖНО: используем doc_ref.get(transaction=tx), а не tx.get(doc_ref)
+        snap = doc_ref.get(transaction=tx)
+        data = (snap.to_dict() or {}) if snap.exists else {}
         last = int(data.get(field_name, -1))
-        next_idx = 0 if modulo == 0 else (last + 1) % modulo
+        next_idx = (last + 1) % modulo
         tx.set(doc_ref, {field_name: next_idx}, merge=True)
         return next_idx
 
-    return _run(firestore.Transaction(db))
+    return _run(txn)
+
+
 
 def get_next_phrase_item():
     """
@@ -754,18 +760,85 @@ def _get_last_fact_date(user_id):
 
 def _set_last_fact_date(user_id, date_iso):
     db.collection("users").document(str(user_id)).set({"last_fact": date_iso}, merge=True)
+# Порядок путей, откуда пробуем читать факты
+FACTS_PATHS = [os.getenv("FACTS_FILE"), "facts.categorized.json", "facts.json"]
 
-def send_fact_of_the_day_now():
-    item = get_next_fact_item()
-    today = datetime.now(tz).date().isoformat()
-    msg = build_fact_message(item)
-    
-    # Все пользователи, у кого включена подписка sub_fact
-    try:
-        recipients = [int(doc.id) for doc in db.collection("users").where("sub_fact", "==", True).stream()]
-    except Exception as e:
-        print(f"[fact] recipients err: {e}")
-        recipients = []
+# Карта "день недели -> категория"
+# Python weekday(): Monday=0 ... Sunday=6
+# Хотим: Вс -> бюрократия, Пн -> работа, и т.д.
+WEEKDAY_CATS = {
+    6: "bureaucracy",  # Sunday (в Python это 6)
+    0: "employment",   # Monday
+    1: "health",       # Tuesday
+    2: "transport",    # Wednesday
+    3: "education",    # Thursday
+    4: "shopping",     # Friday
+    5: "slang",        # Saturday
+}
+
+CAT_TITLES = {
+    "bureaucracy": "🗂️ Бюрократия",
+    "employment":  "💼 Работа и налоги",
+    "health":      "🩺 Здоровье",
+    "transport":   "🚌 Транспорт",
+    "education":   "🏫 Образование/дети",
+    "shopping":    "🛒 Покупки/сервисы",
+    "slang":       "🗣️ Язык и сленг",
+    "public":      "🏛️ Госуслуги",
+    "documents":   "🪪 Документы",
+    "tenders":     "📑 Тендеры",
+    "misc":        "ℹ️ Факт дня",
+}
+
+def _load_facts():
+    for p in FACTS_PATHS:
+        if p and os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    return []
+
+def _todays_category(now=None):
+    tz = pytz.timezone("Asia/Jerusalem")
+    now = now or datetime.now(tz)
+    return WEEKDAY_CATS.get(now.weekday(), "misc")
+
+def _pick_fact_for_category(cat, facts):
+    # 1) пробуем строго нужную категорию
+    items = [x for x in facts if x.get("cat") == cat]
+    # 2) мягкие фолбэки, если в выбранный день вдруг пусто
+    if not items:
+        for c2 in ["public", "documents", "bureaucracy", "shopping", "misc"]:
+            items = [x for x in facts if x.get("cat") == c2]
+            if items:
+                cat = c2
+                break
+    if not items:
+        return None, cat, 0, 0
+
+    # крутим свой индекс по каждой категории отдельно
+    idx = _next_index_txn("meta/facts_daily", cat, len(items))
+    return items[idx], cat, idx, len(items)
+# === /ФАКТ ДНЯ: НАСТРОЙКИ И ХЕЛПЕРЫ ===
+def send_fact_of_the_day_now(force_cat: str | None = None):
+    facts = _load_facts()
+    if not facts:
+        print("Нет facts.json — пропускаю рассылку")
+        return
+
+    cat = (force_cat or "").strip().lower() or _todays_category()
+    item, used_cat, idx, total = _pick_fact_for_category(cat, facts)
+    if not item:
+        print("Не нашел подходящих фактов — пропускаю")
+        return
+
+    title = CAT_TITLES.get(used_cat, CAT_TITLES["misc"])
+    he = item.get("he", "")
+    ru = item.get("ru", "")
+    note = item.get("note") or ""
+
+    text = f"{title}\n\n🇮🇱 {he}\n🇷🇺 {ru}"
+    if note:
+        text += f"\n📝 {note}"
     
     for user_id in recipients:
         if _get_last_fact_date(user_id) == today:
@@ -1228,11 +1301,15 @@ def cmd_pod(m):
 
 @bot.message_handler(commands=['fact'])
 def cmd_fact(m):
-    if not is_owner(m.from_user.id):
-        return bot.send_message(m.chat.id, "⛔ Нет прав")
-    
-    send_fact_of_the_day_now()
-    bot.send_message(m.chat.id, "Факт дня разослала всем (кто ещё не получал сегодня).")
+    if not check_access(m.from_user.id):
+        return bot.send_message(m.chat.id, "Извини, доступ ограничен 👮‍♀️")
+
+    # Админ может указать категорию: /fact slang
+    parts = (m.text or "").split(maxsplit=1)
+    cat = parts[1].strip().lower() if len(parts) > 1 else None
+
+    send_fact_of_the_day_now(force_cat=cat)
+    bot.send_message(m.chat.id, "✅ Факт дня отправлен" + (f" (категория: {cat})" if cat else ""))
 
 @bot.message_handler(commands=['donate'])
 def cmd_donate(m):
