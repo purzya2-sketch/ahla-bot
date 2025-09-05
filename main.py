@@ -121,26 +121,7 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-def _cleanup_commands_once():
-    try:
-        # стереть дефолтные (если бот их когда-то ставил кодом)
-        bot.delete_my_commands()
-        print("[cmds] default cleared")
-    except Exception as e:
-        print("[cmds] default clear failed:", e)
-
-    # стереть чат-специфичные команды у админов
-    for admin_id in ALLOWED_ADMINS:
-        try:
-            scope = types.BotCommandScopeChat(admin_id)
-            bot.delete_my_commands(scope=scope)
-            print(f"[cmds] chat scope cleared for {admin_id}")
-        except Exception as e:
-            print(f"[cmds] chat scope clear failed for {admin_id}:", e)
-
-_cleanup_commands_once()  # ← вызвать один раз, потом удалить из кода
-
-VERSION = "botargem-13"
+VERSION = "botargem-14"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
