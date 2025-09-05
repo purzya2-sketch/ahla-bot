@@ -189,7 +189,8 @@ def _ensure_user(user):
         "last_name": user.last_name or "",
         "sub_pod": True,  # Фраза дня: по умолчанию включена
         "sub_fact": True,  # Факт дня: по умолчанию включён
-        "last_seen": datetime.utcnow().isoformat(),
+        "last_seen": datetime.now(timezone.utc).isoformat(),
+
     }, merge=True)
 def _send_explanation_guard(chat_id: int, body: str, offline: bool = False):
     """
@@ -576,7 +577,7 @@ def _history_ref(user_id: int):
 def add_history(user_id: int, kind: str, source: str, result: str):
     try:
         _history_ref(user_id).add({
-            "ts": datetime.utcnow().isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
             "kind": kind,  # "text" | "audio"
             "source": (source or "")[:4000],
             "result": (result or "")[:4000],
