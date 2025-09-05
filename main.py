@@ -145,7 +145,7 @@ def create_bot_with_retry():
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
 setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
-VERSION = "botargem-9"
+VERSION = "botargem-10"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -743,38 +743,6 @@ def _load_facts_file():
         print(f"[facts] fallback: {e}")
     return FALLBACK_FACTS
 
-FACTS_DB = _load_facts_file()
-def _load_facts_list():
-    """
-    Пробуем взять факты из коллекции Firestore 'facts' (каждый документ: {he, ru, note}),
-    если пусто/ошибка — берём локальные FACTS_DB.
-    """
-    try:
-        docs = list(db.collection("facts").stream())
-        items = []
-        for d in docs:
-            x = d.to_dict() or {}
-            he = x.get("he", "").strip()
-            ru = x.get("ru", "").strip()
-            note = x.get("note", "")
-            if he and ru:
-                items.append({"he": he, "ru": ru, "note": note})
-        if items:
-            return items
-    except Exception as e:
-        print(f"[facts] Firestore read err: {e}")
-    return FACTS_DB
-
-FACTS_LIST = _load_facts_list()
-
-def get_next_fact_item():
-    """
-    Берёт следующий факт по кругу из FACTS_LIST.
-    Индекс хранится в meta/facts.last_index
-    """
-    idx = _next_index_txn("meta/facts", "last_index", len(FACTS_LIST))
-    return FACTS_LIST[idx]
-
 
 def build_fact_message(item):
     msg = f"📜 *Факт дня*\n\n🗣 {item.get('he', '')}\n📘 Перевод: {item.get('ru', '')}"
@@ -848,12 +816,13 @@ def _pick_fact_for_category(cat, facts):
     idx = _next_index_txn("meta/facts_daily", cat, len(items))
     return items[idx], cat, idx, len(items)
 # === /ФАКТ ДНЯ: НАСТРОЙКИ И ХЕЛПЕРЫ ===
-def send_fact_of_the_day_now(force_cat: str | None = None):
+def send_fact_of_the_day_now(force_cat=None):
     facts = _load_facts()
     if not facts:
         print("Нет facts.json — пропускаю рассылку")
         return
 
+    # категория по дню недели или принудительно из аргумента
     cat = (force_cat or "").strip().lower() or _todays_category()
     item, used_cat, idx, total = _pick_fact_for_category(cat, facts)
     if not item:
@@ -868,15 +837,30 @@ def send_fact_of_the_day_now(force_cat: str | None = None):
     text = f"{title}\n\n🇮🇱 {he}\n🇷🇺 {ru}"
     if note:
         text += f"\n📝 {note}"
-    
+
+    # сегодняшняя дата — чтобы не слать дважды
+    today = datetime.now(tz).date().isoformat()
+
+    # все, кто подписан на «факт дня»
+    try:
+        recipients = [int(doc.id) for doc in db.collection("users").where("sub_fact", "==", True).stream()]
+    except Exception as e:
+        print(f"[fact] recipients err: {e}")
+        recipients = []
+
+    sent = 0
     for user_id in recipients:
         if _get_last_fact_date(user_id) == today:
             continue
         try:
-            bot.send_message(user_id, msg, parse_mode="Markdown")
+            bot.send_message(user_id, text, parse_mode="Markdown")
             _set_last_fact_date(user_id, today)
+            sent += 1
         except Exception as e:
             print(f"[fact] send failed for {user_id}: {e}")
+
+    print(f"[fact] sent={sent} cat={used_cat} idx={idx}/{total-1}")
+
 
 def _schedule_next_20():
     now = datetime.now(tz)
