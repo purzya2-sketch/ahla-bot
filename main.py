@@ -86,6 +86,8 @@ class HealthHandler(BaseHTTPRequestHandler):
     
     def do_HEAD(self):
         self._ok_headers()
+    def log_message(self, format, *args):
+        return
 
 def run_health_server():
     port = int(os.environ.get("PORT", "10000"))
@@ -190,7 +192,7 @@ def _ensure_user(user):
         "last_name": user.last_name or "",
         "sub_pod": True,  # Фраза дня: по умолчанию включена
         "sub_fact": True,  # Факт дня: по умолчанию включён
-        "last_seen": datetime.utcnow().isoformat(),
+        "last_seen": datetime.now(timezone.utc).isoformat(),
     }, merge=True)
 
 def _send_explanation_guard(chat_id: int, body: str, offline: bool = False):
@@ -429,7 +431,7 @@ def _strip_noise(s: str) -> str:
     return (s or "").replace("\u200d", "").replace("\u200c", "").strip()
 
 def _looks_like_only_punct_or_emoji(s: str) -> bool:
-    # нет ни одной буквы, и все символы — не буквенно-цифровые (пунктуация/смодзи)
+    # нет ни одной буквы, и все символы — не буквенно-цифровые (пунктуация/эмодзи)
     no_letters = LETTER_RE.search(s) is None
     only_non_alnum = all((not ch.isalnum()) for ch in s)
     return no_letters and only_non_alnum
@@ -464,12 +466,12 @@ IDIOMS = {
 def explain_local(he_text: str) -> str:
     tr = translate_text(he_text)
     hits = []
-    low = he_text.replace("ג", "").replace("'", "").replace("", "")
-    
+    low = he_text.replace("׳", "").replace("'", "")
     for k, note in IDIOMS.items():
-        if k in low or k.replace("ג", "") in low:
-            hits.append(f"• *{k}* — {note}")
-    
+        kk = k.replace("׳", "").replace("'", "")
+        if kk in low:
+           hits.append(f"• *{k}* — {note}")
+
     note_block = "\n".join(hits) if hits else "Сленг/идиом не найдено."
     
     return (
@@ -579,7 +581,7 @@ def _history_ref(user_id: int):
 def add_history(user_id: int, kind: str, source: str, result: str):
     try:
         _history_ref(user_id).add({
-            "ts": datetime.utcnow().isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
             "kind": kind,  # "text" | "audio"
             "source": (source or "")[:4000],
             "result": (result or "")[:4000],
@@ -619,12 +621,12 @@ user_data = {}
 FALLBACK_PHRASES = [
     {"he": "סבבה", "ru": "окей; норм", "note": "разговорное «ок»"},
     {"he": "אין בעיה", "ru": "без проблем", "note": ""},
-    {"he": "יאללה נתקדם", "ru": "ну поехали, двигаемся", "note": ""},
+    {"he": "יאללה, נתקדם", "ru": "ну поехали, двигаемся", "note": ""},
     {"he": "בא לי קפה", "ru": "мне хочется кофе", "note": "בא לי — «мне хочется»"},
     {"he": "כמה זה יוצא?", "ru": "сколько выходит?", "note": "про цену/итог"},
     {"he": "סגרתי פינה", "ru": "закрыла вопрос; разобралась", "note": "сленг"},
-    {"he": "יאללה זזזתי", "ru": "ладно, я пошла", "note": "букв. «двинулась»"},
-    {"he": "שניה אני בודקת", "ru": "секунду, я проверю", "note": ""},
+    {"he": "יאללה, זזתי", "ru": "ладно, я пошла", "note": "букв. «двинулась»"}, 
+    {"he": "שניה, אני בודקת", "ru": "секунду, я проверю", "note": ""},
 ]
 
 def load_phrase_db():
@@ -931,7 +933,7 @@ def _choose_question():
         "note": note,
         "options": options,
         "answer": answer_idx,
-        "ts": datetime.utcnow().isoformat(),
+       "ts": datetime.now(timezone.utc).isoformat(),
         "done": False
     }
 
@@ -1156,10 +1158,10 @@ def send_rules(m):
 
 @bot.message_handler(commands=['copyrights'])
 def send_copyrights(m):
-    text =(
-        "📋Авторские права \n"
+    text = (
+        "🔒 Авторские права \n"
         "© 2025 Botargem. Все права защищены.\n"
-        "© 2025 Botargem. כל הזכויות שמורות.\n"
+        "© 2025 ‏Botargem. כל הזכויות שמורות.\n\n"
         "RU:\n"
         "• Дизайн, тексты интерфейса, база фраз и логотип 🦉 — собственность автора.\n"
         "• Нельзя копировать или публиковать без разрешения.\n"
@@ -1174,6 +1176,7 @@ def send_copyrights(m):
         "• מדיה בפרומו — ברישיון מתאים או חופשי.\n"
     )
     bot.send_message(m.chat.id, text)
+
 
 @bot.message_handler(commands=['profile'])
 def cmd_profile(m):
@@ -1722,7 +1725,7 @@ def handle_callback(call):
     if call.data == "rcpt:paybox":
         receipt_state[call.message.chat.id] = {
             "provider": "paybox",
-            "ts": datetime.utcnow().isoformat()
+            "ts": datetime.now(timezone.utc).isoformat()
         }
         bot.send_message(
             call.message.chat.id,
