@@ -149,7 +149,9 @@ def setup_admin_commands():
         except Exception as e:
             print("set_my_commands for admin failed:", admin_id, e)
 
-setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
+if os.getenv("SET_COMMANDS_AT_STARTUP", "0") == "1":
+    setup_admin_commands()
+
 VERSION = "botargem-10"
 
 # какой движок перевода использовали в последний раз для этого чата
