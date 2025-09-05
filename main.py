@@ -151,9 +151,6 @@ def setup_admin_commands():
 
 setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
 VERSION = "botargem-10"
-print(f"[facts] FACTS_FILE={os.getenv('FACTS_FILE','<none>')}")
-print(f"[facts] BASE_DIR={BASE_DIR}")
-print(f"[facts] CWD={os.getcwd()}")
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -186,6 +183,11 @@ else:
 
 db = firestore.client(app=app)
 print(f"🔥 Firebase подключен: app={app.name}")
+
+print(f"[facts] FACTS_FILE={os.getenv('FACTS_FILE','<none>')}")
+print(f"[facts] BASE_DIR={BASE_DIR}")
+print(f"[facts] CWD={os.getcwd()}")
+
 
 # ===== USERS: автокарточка и подписки по умолчанию =====
 def _ensure_user(user):
@@ -689,6 +691,13 @@ def get_next_phrase_item():
     """
     idx = _next_index_txn("meta/phrases", "last_index", len(phrase_db))
     return phrase_db[idx]
+def _get_last_fact_date(user_id):
+    doc = db.collection("users").document(str(user_id)).get()
+    d = doc.to_dict() or {}
+    return d.get("last_fact")
+
+def _set_last_fact_date(user_id, date_iso):
+    db.collection("users").document(str(user_id)).set({"last_fact": date_iso}, merge=True)
 
 def _get_last_pod_date(user_id):
     doc = db.collection("users").document(str(user_id)).get()
@@ -736,7 +745,6 @@ def _schedule_next_8am():
 
 _schedule_next_8am()
 
-# ===== ФАКТ ДНЯ (20:00) =====
 # ===== ФАКТ ДНЯ (20:00) =====
 FALLBACK_FACTS = [
     {"he": "המילה שלום משמשת כברכה וגם כפרידה.", "ru": "«Шалом» — и приветствие, и прощание.", "note": "Также означает «мир»."},
@@ -788,6 +796,30 @@ def _pick_fact_for_category(cat, facts):
         return None, cat, 0, 0
     idx = _next_index_txn("meta/facts_daily", cat, len(items))
     return items[idx], cat, idx, len(items)
+# Python weekday(): Mon=0 ... Sun=6
+WEEKDAY_CATS = {
+    6: "bureaucracy",  # Sunday
+    0: "employment",   # Monday
+    1: "health",       # Tuesday
+    2: "transport",    # Wednesday
+    3: "education",    # Thursday
+    4: "shopping",     # Friday
+    5: "slang",        # Saturday
+}
+
+CAT_TITLES = {
+    "bureaucracy": "🗂️ Бюрократия",
+    "employment":  "💼 Работа и налоги",
+    "health":      "🩺 Здоровье",
+    "transport":   "🚌 Транспорт",
+    "education":   "🏫 Образование/дети",
+    "shopping":    "🛒 Покупки/сервисы",
+    "slang":       "🗣️ Язык и сленг",
+    "public":      "🏛️ Госуслуги",
+    "documents":   "🪪 Документы",
+    "tenders":     "📋 Тендеры",
+    "misc":        "ℹ️ Факт дня",
+}
 
 def send_fact_of_the_day_now(force_cat=None):
     facts = _load_facts()
@@ -829,6 +861,23 @@ def send_fact_of_the_day_now(force_cat=None):
 
     print(f"[fact] sent={sent} cat={used_cat} idx={idx}/{max(total-1,0)}")
 
+def _schedule_next_20():
+    now = datetime.now(tz)
+    next20 = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    if now >= next20:
+        next20 += timedelta(days=1)
+    delay = (next20 - now).total_seconds()
+
+    def _run():
+        try:
+            send_fact_of_the_day_now()
+        finally:
+            _schedule_next_20()
+
+    threading.Timer(delay, _run).start()
+
+# включаем планировщик фактов (ровно один раз в файле!)
+_schedule_next_20()
 
 # ===== ВИКТОРИНА =====
 QUIZ_COLL = "quiz"
@@ -1299,9 +1348,10 @@ def cmd_donate(m):
         pass
     
     # PayBox: кнопка
+    
     kb = InlineKeyboardMarkup()
     for title, url in DONATE_LINKS:
-        kb.add(InlineKeyboardButton(text=title, url=url))
+        kb.add(InlineKeyboardButton("🍰 PayBox", url="https://links.payboxapp.com/FqQZPo2wfWb"))
     bot.send_message(m.chat.id, "Или поддержать через PayBox 👇", reply_markup=kb)
 
 @bot.message_handler(commands=['history'])
