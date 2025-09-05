@@ -10,6 +10,7 @@ import pytz
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import subprocess, tempfile
+from telebot import types
 # ==== детектор иврита/русского ====
 HEB_RE = re.compile(r'[\u0590-\u05FF]')
 CYR_RE = re.compile(r'[А-Яа-яЁё]')
@@ -25,6 +26,33 @@ load_dotenv()
 
 ALLOWED_ADMINS = {1037123191}  # сюда свой ID и ID подруг/дочери, если надо
 tz = pytz.timezone('Asia/Jerusalem')
+ADMIN_COMMANDS = [
+    types.BotCommand("pod", "Ручная рассылка фразы дня"),
+    types.BotCommand("fact", "Ручная рассылка факта дня (/fact slang и т.п.)"),
+    types.BotCommand("setpremium", "Выдать премиум: /setpremium <id> <YYYY-MM-DD>"),
+    types.BotCommand("stats", "Статистика пользователей"),
+    types.BotCommand("access", "Проверка доступа и версии"),
+    types.BotCommand("version", "Версия кода"),
+    types.BotCommand("subs", "Подписки/рассылка"),
+]
+
+PUBLIC_COMMANDS = [
+    types.BotCommand("start", "Начать"),
+    types.BotCommand("help", "Что умеет бот"),
+    types.BotCommand("donate", "Поддержать проект"),
+]
+
+def setup_admin_commands():
+    # Меню по умолчанию — для всех
+    bot.set_my_commands(PUBLIC_COMMANDS)
+
+    # Расширенное меню — только в личке у админов
+    for admin_id in ALLOWED_ADMINS:
+        try:
+            scope = types.BotCommandScopeChat(admin_id)  # меню видно только этому id в личном чате с ботом
+            bot.set_my_commands(PUBLIC_COMMANDS + ADMIN_COMMANDS, scope=scope, language_code="ru")
+        except Exception as e:
+            print("set_my_commands for admin failed:", admin_id, e)
 
 # OpenAI
 from openai import (
@@ -116,7 +144,8 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-8"
+setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
+VERSION = "botargem-9"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
