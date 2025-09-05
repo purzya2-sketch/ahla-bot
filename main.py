@@ -41,6 +41,7 @@ ADMIN_COMMANDS = [
 PUBLIC_COMMANDS = [
     types.BotCommand("start", "Начать"),
     types.BotCommand("help", "Что умеет бот"),
+    types.BotCommand("mymenu", "Мои доступные команды"),
     types.BotCommand("donate", "Поддержать проект"),
 ]
 
@@ -138,21 +139,27 @@ def create_bot_with_retry():
 bot = create_bot_with_retry()
 
 def setup_admin_commands():
-    # НЕ трогаем дефолт — им управляет BotFather
-    if os.getenv("SET_DEFAULT_COMMANDS", "0") == "1":
+    # Устанавливаем базовые команды для всех
+    try:
         bot.set_my_commands(PUBLIC_COMMANDS)
-
-    # Чат-специфичное меню для админов (перечень в ALLOWED_ADMINS)
+        cmd_names = [cmd.command for cmd in PUBLIC_COMMANDS]
+        print(f"✅ Публичные команды установлены: {', '.join(cmd_names)}")
+    except Exception as e:
+        print(f"❌ Ошибка установки публичных команд: {e}")
+    
+    # Админские команды для конкретных пользователей
     for admin_id in ALLOWED_ADMINS:
         try:
             scope = types.BotCommandScopeChat(admin_id)
-            bot.set_my_commands(PUBLIC_COMMANDS + ADMIN_COMMANDS, scope=scope, language_code="ru")
+            all_commands = PUBLIC_COMMANDS + ADMIN_COMMANDS
+            bot.set_my_commands(all_commands, scope=scope)
+            
+            admin_cmd_names = [cmd.command for cmd in ADMIN_COMMANDS]
+            print(f"✅ Админские команды для {admin_id}: {', '.join(admin_cmd_names)}")
         except Exception as e:
-            print("set_my_commands for admin failed:", admin_id, e)
-
-
+            print(f"❌ Ошибка установки команд для админа {admin_id}: {e}")
 setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
-VERSION = "botargem-11"
+VERSION = "botargem-12"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -1459,7 +1466,21 @@ def cmd_subs(m):
         "Нажми кнопку, чтобы переключить."
     )
     bot.send_message(m.chat.id, text, reply_markup=_subs_kb(sub_pod, sub_fact))
-
+@bot.message_handler(commands=['mymenu'])
+def cmd_mymenu(m):
+    try:
+        # Получаем команды для текущего пользователя
+        commands = bot.get_my_commands(scope=types.BotCommandScopeChat(m.chat.id))
+        if commands:
+            menu_list = "\n".join([f"/{cmd.command} - {cmd.description}" for cmd in commands])
+            bot.send_message(m.chat.id, f"Твои команды:\n{menu_list}")
+        else:
+            # Получаем глобальные команды
+            global_commands = bot.get_my_commands()
+            menu_list = "\n".join([f"/{cmd.command} - {cmd.description}" for cmd in global_commands])
+            bot.send_message(m.chat.id, f"Глобальные команды:\n{menu_list}")
+    except Exception as e:
+        bot.send_message(m.chat.id, f"Ошибка получения команд: {e}")
 @bot.message_handler(commands=['podon', 'podoff', 'facton', 'factoff'])
 def cmd_subs_short(m):
     _ensure_user(m.from_user)
