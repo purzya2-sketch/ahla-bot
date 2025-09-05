@@ -42,18 +42,6 @@ PUBLIC_COMMANDS = [
     types.BotCommand("donate", "Поддержать проект"),
 ]
 
-def setup_admin_commands():
-    # Меню по умолчанию — для всех
-    bot.set_my_commands(PUBLIC_COMMANDS)
-
-    # Расширенное меню — только в личке у админов
-    for admin_id in ALLOWED_ADMINS:
-        try:
-            scope = types.BotCommandScopeChat(admin_id)  # меню видно только этому id в личном чате с ботом
-            bot.set_my_commands(PUBLIC_COMMANDS + ADMIN_COMMANDS, scope=scope, language_code="ru")
-        except Exception as e:
-            print("set_my_commands for admin failed:", admin_id, e)
-
 # OpenAI
 from openai import (
     OpenAI,
@@ -131,7 +119,7 @@ def create_bot_with_retry():
             return bot
         except telebot.apihelper.ApiTelegramException as e:
             if "409" in str(e):
-                print(f"❌ Конфликт экземпляров (попытка {attempt + 1}). Жду...")
+                print(f"⚠ Конфликт экземпляров (попытка {attempt + 1}). Жду...")
                 time.sleep(15)
             else:
                 raise e
@@ -144,6 +132,19 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
+
+def setup_admin_commands():
+    # Меню по умолчанию — для всех
+    bot.set_my_commands(PUBLIC_COMMANDS)
+
+    # Расширенное меню — только в личке у админов
+    for admin_id in ALLOWED_ADMINS:
+        try:
+            scope = types.BotCommandScopeChat(admin_id)  # меню видно только этому id в личном чате с ботом
+            bot.set_my_commands(PUBLIC_COMMANDS + ADMIN_COMMANDS, scope=scope, language_code="ru")
+        except Exception as e:
+            print("set_my_commands for admin failed:", admin_id, e)
+
 setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
 VERSION = "botargem-10"
 
@@ -189,9 +190,9 @@ def _ensure_user(user):
         "last_name": user.last_name or "",
         "sub_pod": True,  # Фраза дня: по умолчанию включена
         "sub_fact": True,  # Факт дня: по умолчанию включён
-        "last_seen": datetime.now(timezone.utc).isoformat(),
-
+        "last_seen": datetime.utcnow().isoformat(),
     }, merge=True)
+
 def _send_explanation_guard(chat_id: int, body: str, offline: bool = False):
     """
     Если ответ получился целиком на иврите (без кириллицы) — не шлём «простыню»,
@@ -206,6 +207,7 @@ def _send_explanation_guard(chat_id: int, body: str, offline: bool = False):
         return
     prefix = "🧠 Объяснение (офлайн):\n" if offline else "🧠 Объяснение:\n"
     bot.send_message(chat_id, prefix + body)
+
 # ===== ДОСТУП: только ID из allowed_users =====
 ALLOWED_USERS = set()
 
@@ -427,7 +429,7 @@ def _strip_noise(s: str) -> str:
     return (s or "").replace("\u200d", "").replace("\u200c", "").strip()
 
 def _looks_like_only_punct_or_emoji(s: str) -> bool:
-    # нет ни одной буквы, и все символы — не буквенно-цифровые (пунктуация/эмодзи)
+    # нет ни одной буквы, и все символы — не буквенно-цифровые (пунктуация/смодзи)
     no_letters = LETTER_RE.search(s) is None
     only_non_alnum = all((not ch.isalnum()) for ch in s)
     return no_letters and only_non_alnum
@@ -455,17 +457,17 @@ IDIOMS = {
     "תכלס": "Сленг: «по сути, по факту».",
     "כפרה": "Ласковое обращение: «душа моя».",
     "אין מצב": "«Ни за что / да ну!» — удивление/отказ.",
-    "די נו": "«Хватит уже / да ну».",
+    "די נו": "«Хватить уже / да ну».",
     "מה נסגר איתך": "«Что с тобой происходит?» — разговорное.",
 }
 
 def explain_local(he_text: str) -> str:
     tr = translate_text(he_text)
     hits = []
-    low = he_text.replace("׳", "").replace("'", "").replace("", "")
+    low = he_text.replace("ג", "").replace("'", "").replace("", "")
     
     for k, note in IDIOMS.items():
-        if k in low or k.replace("׳", "") in low:
+        if k in low or k.replace("ג", "") in low:
             hits.append(f"• *{k}* — {note}")
     
     note_block = "\n".join(hits) if hits else "Сленг/идиом не найдено."
@@ -548,13 +550,13 @@ def process_audio(message):
         # 4) перевод распознанного текста
         translated = translate_text(text)
 
-        # 5) сохранить текст для кнопок «🧠 Объяснить» и «🔁 Новый перевод»
+        # 5) сохранить текст для кнопок «🧠 Объяснить» и «🔄 Новый перевод»
         user_translations[chat_id] = text
         user_engine[chat_id] = "google"
 
         # 6) показать всё одним сообщением + кнопки
         msg = (
-            f"📝 Расшифровка:\n{text}\n\n"
+            f"🎙 Расшифровка:\n{text}\n\n"
             f"📘 Перевод:\n*{translated}*"
         )
         bot.send_message(chat_id, msg, parse_mode="Markdown", reply_markup=get_keyboard())
@@ -577,7 +579,7 @@ def _history_ref(user_id: int):
 def add_history(user_id: int, kind: str, source: str, result: str):
     try:
         _history_ref(user_id).add({
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.utcnow().isoformat(),
             "kind": kind,  # "text" | "audio"
             "source": (source or "")[:4000],
             "result": (result or "")[:4000],
@@ -590,7 +592,7 @@ def get_keyboard():
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("🧠 Объяснить", callback_data="explain"),
-        InlineKeyboardButton("🔁 Новый перевод", callback_data="new")
+        InlineKeyboardButton("🔄 Новый перевод", callback_data="new")
     )
     return markup
 
@@ -607,7 +609,7 @@ receipt_state = {}  # chat_id -> {"provider": "paybox", "ts": datetime.utcnow().
 
 # PayBox: распознаём ссылку или «признаки» в тексте
 PAYBOX_URL_RE = re.compile(r"https?://\S*payboxapp\.com/\S+", re.I)
-AMOUNT_RE = re.compile(r"(\d+[.,]?\d*)\s*(₪|шек|nis|ש״ח)", re.I)  # число + валюта/₪
+AMOUNT_RE = re.compile(r"(\d+[.,]?\d*)\s*(₪|шек|nis|שח)", re.I)  # число + валюта/₪
 
 # === Состояние пользователей ===
 user_translations = {}
@@ -617,12 +619,12 @@ user_data = {}
 FALLBACK_PHRASES = [
     {"he": "סבבה", "ru": "окей; норм", "note": "разговорное «ок»"},
     {"he": "אין בעיה", "ru": "без проблем", "note": ""},
-    {"he": "יאללה, נתקדם", "ru": "ну поехали, двигаемся", "note": ""},
+    {"he": "יאללה נתקדם", "ru": "ну поехали, двигаемся", "note": ""},
     {"he": "בא לי קפה", "ru": "мне хочется кофе", "note": "בא לי — «мне хочется»"},
     {"he": "כמה זה יוצא?", "ru": "сколько выходит?", "note": "про цену/итог"},
     {"he": "סגרתי פינה", "ru": "закрыла вопрос; разобралась", "note": "сленг"},
-    {"he": "יאללה, זזתי", "ru": "ладно, я пошла", "note": "букв. «двинулась»"},
-    {"he": "שניה, אני בודקת", "ru": "секунду, я проверю", "note": ""},
+    {"he": "יאללה זזזתי", "ru": "ладно, я пошла", "note": "букв. «двинулась»"},
+    {"he": "שניה אני בודקת", "ru": "секунду, я проверю", "note": ""},
 ]
 
 def load_phrase_db():
@@ -646,6 +648,7 @@ def build_pod_message(item):
         f"📘 Перевод: _{item['ru']}_\n"
         f"💬 Пояснение: {item.get('note', '—')}"
     )
+
 # === РОТАЦИИ (циклический выбор без повторов) ===
 META_COL = "meta"
 
@@ -671,8 +674,6 @@ def _next_index_txn(doc_path: str, field_name: str, modulo: int) -> int:
         return next_idx
 
     return _run(txn)
-
-
 
 def get_next_phrase_item():
     """
@@ -744,7 +745,6 @@ def _load_facts_file():
         print(f"[facts] fallback: {e}")
     return FALLBACK_FACTS
 
-
 def build_fact_message(item):
     msg = f"📜 *Факт дня*\n\n🗣 {item.get('he', '')}\n📘 Перевод: {item.get('ru', '')}"
     if item.get("note"):
@@ -758,6 +758,7 @@ def _get_last_fact_date(user_id):
 
 def _set_last_fact_date(user_id, date_iso):
     db.collection("users").document(str(user_id)).set({"last_fact": date_iso}, merge=True)
+
 # Порядок путей, откуда пробуем читать факты
 FACTS_PATHS = [os.getenv("FACTS_FILE"), "facts.categorized.json", "facts.json"]
 
@@ -784,7 +785,7 @@ CAT_TITLES = {
     "slang":       "🗣️ Язык и сленг",
     "public":      "🏛️ Госуслуги",
     "documents":   "🪪 Документы",
-    "tenders":     "📑 Тендеры",
+    "tenders":     "📋 Тендеры",
     "misc":        "ℹ️ Факт дня",
 }
 
@@ -816,6 +817,7 @@ def _pick_fact_for_category(cat, facts):
     # крутим свой индекс по каждой категории отдельно
     idx = _next_index_txn("meta/facts_daily", cat, len(items))
     return items[idx], cat, idx, len(items)
+
 # === /ФАКТ ДНЯ: НАСТРОЙКИ И ХЕЛПЕРЫ ===
 def send_fact_of_the_day_now(force_cat=None):
     facts = _load_facts()
@@ -861,7 +863,6 @@ def send_fact_of_the_day_now(force_cat=None):
             print(f"[fact] send failed for {user_id}: {e}")
 
     print(f"[fact] sent={sent} cat={used_cat} idx={idx}/{total-1}")
-
 
 def _schedule_next_20():
     now = datetime.now(tz)
@@ -1101,22 +1102,24 @@ def cmd_access(m):
 @bot.message_handler(commands=['id'])
 def send_user_id(message):
     bot.send_message(message.chat.id, f"👤 Твой Telegram ID: {message.from_user.id}", parse_mode='Markdown')
+
 HELP_TEXT = (
     "👋 Привет! Я помогаю с ивритом.\n\n"
     "• Пришлите *текст или аудио на иврите* — переведу на русский\n"
-    "• Под ответом будут кнопки: «🧠 Объяснить», «🔁 Новый перевод»\n"
+    "• Под ответом будут кнопки: «🧠 Объяснить», «🔄 Новый перевод»\n"
     "• Мини-викторина: /quiz\n\n"
-    "🔽 Разделы бота: /menu\n"
-    "💝 Поддержка: /donate (Bit QR или PayBox)\n"
+    "📽 Разделы бота: /menu\n"
+    "👍 Поддержка: /donate (Bit QR или PayBox)\n"
 )
+
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
     _ensure_user(m.from_user)
     bot.send_message(
         m.chat.id,
         "👋Привет! Я перевожу и объясняю иврит.\n"
-        "📝Пришли текст или аудио на иврите — дам перевод.\n"
-        "🔽 Все разделы: /menu\n"
+        "📤Пришли текст или аудио на иврите — дам перевод.\n"
+        "📽 Все разделы: /menu\n"
         "© 2025 Botargem. Все права защищены"
     )
 
@@ -1153,10 +1156,10 @@ def send_rules(m):
 
 @bot.message_handler(commands=['copyrights'])
 def send_copyrights(m):
-    text = (
-        "🔒 Авторские права \n"
+    text =(
+        "📋Авторские права \n"
         "© 2025 Botargem. Все права защищены.\n"
-        "© 2025 ‏Botargem. כל הזכויות שמורות.\n\n"
+        "© 2025 Botargem. כל הזכויות שמורות.\n"
         "RU:\n"
         "• Дизайн, тексты интерфейса, база фраз и логотип 🦉 — собственность автора.\n"
         "• Нельзя копировать или публиковать без разрешения.\n"
@@ -1164,7 +1167,7 @@ def send_copyrights(m):
         "• Ваши сообщения/аудио остаются вашими; отправляя их, вы разрешаете обработку для перевода/объяснений.\n"
         "• Медиа в промо — с разрешением или по открытой лицензии.\n"
         "HE:\n"
-        "• העיצוב, הטקסטים, מאגר הביטויים והלוגו 🦉 הם קניין של היוצר.\n"
+        "• העיצוב, הטקסטים, מאגר הביטויים והלוגו 🦉 הם קניינו של היוצר.\n"
         "• אין להעתיק או לפרסם ללא אישור.\n"
         "• מותר שימוש אישי בתרגומים, אסור למכור כשירות משלכם.\n"
         "• התוכן שאתם שולחים (טקסט/אודיו) נשאר שלכם; בשליחתו אתם מאשרים שימוש לצורך תרגום/הסבר.\n"
@@ -1199,8 +1202,8 @@ def cmd_profile(m):
     msg = (
         "👤 *Твой профиль / лимиты на сегодня*\n\n"
         f"📝 Тексты: {t_used}/{t_total} {bar_t}\n"
-        f"🔊 Аудио: {a_used}/{a_total} {bar_a}\n"
-        f"🔡 Символы: {tc_used}/{tc_total} {bar_tc}\n"
+        f"📊 Аудио: {a_used}/{a_total} {bar_a}\n"
+        f"📡 Символы: {tc_used}/{tc_total} {bar_tc}\n"
         f"⏱ Секунды: {as_used}/{as_total} {bar_as}\n\n"
         f"🔄 Сброс ~через {hh}ч {mm}м (Asia/Jerusalem)"
     )
@@ -1231,14 +1234,14 @@ def cb_menu(c):
             bot.edit_message_text(
                 "📘 *Переводы*\n"
                 "• Пришлите *текст или аудио на иврите* — я переведу на русский.\n"
-                "• Под переводом будут кнопки: «🧠 Объяснить», «🔁 Новый перевод».",
+                "• Под переводом будут кнопки: «🧠 Объяснить», «🔄 Новый перевод».",
                 c.message.chat.id, c.message.message_id, parse_mode="Markdown"
             )
         except Exception:
             bot.send_message(c.message.chat.id,
                 "📘 *Переводы*\n"
                 "• Пришлите *текст или аудио на иврите* — я переведу на русский.\n"
-                "• Под переводом будут кнопки: «🧠 Объяснить», «🔁 Новый перевод».",
+                "• Под переводом будут кнопки: «🧠 Объяснить», «🔄 Новый перевод».",
                 parse_mode="Markdown"
             )
     elif kind == "games":
@@ -1263,12 +1266,11 @@ def cb_menu(c):
         bot.answer_callback_query(c.id)
         bot.send_message(c.message.chat.id, "📜 Факт дня приходит *в 20:00*. Управление подпиской: /subs", parse_mode="Markdown")
     elif kind == "profile":
-        # Переиспользуем твою функцию профиля:
+        # Переиспользуем твою функцию профиль:
         cmd_profile(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
     elif kind == "premium":
         cmd_premium(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
     bot.answer_callback_query(c.id)
-
 
 @bot.message_handler(commands=['quiz'])
 def cmd_quiz(m):
@@ -1449,7 +1451,7 @@ def cmd_subs(m):
     sub_fact = bool(d.get("sub_fact", True))
     
     text = (
-        "🔔 Управление подписками\n"
+        "📋 Управление подписками\n"
         f"• ☀️ Фраза дня: {'включена' if sub_pod else 'выключена'}\n"
         f"• 📜 Факт дня: {'включён' if sub_fact else 'выключен'}\n\n"
         "Нажми кнопку, чтобы переключить."
@@ -1513,7 +1515,7 @@ def handle_text(message):
     user_id = message.from_user.id
     orig = (message.text or "").strip()
     
-    # Проверка на осмысленность — отсекаем «точки/эмодзи/!!!»
+    # Проверка на осмысленность — отсекаем «точки/смодзи/!!!»
     if not any(ch.isalpha() for ch in orig):
         bot.send_message(message.chat.id, "🤔 Отправьте, пожалуйста, слово или фразу для перевода.")
         return
@@ -1724,7 +1726,7 @@ def handle_callback(call):
         }
         bot.send_message(
             call.message.chat.id,
-            "🔎 Отправьте, пожалуйста, *ссылку PayBox* на оплату ИЛИ *скриншот*.\n"
+            "📎 Отправьте, пожалуйста, *ссылку PayBox* на оплату ИЛИ *скриншот*.\n"
             "Если отправляете скрин — добавьте подпись: *сумма* и *дата/время*.\n\n"
             "Пример подписи: 15₪, 02.09 10:35",
             parse_mode="Markdown"
@@ -1747,7 +1749,7 @@ def handle_callback(call):
             sub_fact = bool(d.get("sub_fact", True))
             
             txt = (
-                "🔔 Подписки обновлены\n"
+                "📋 Подписки обновлены\n"
                 f"• ☀️ Фраза дня: {'включена' if sub_pod else 'выключена'}\n"
                 f"• 📜 Факт дня: {'включён' if sub_fact else 'выключен'}"
             )
