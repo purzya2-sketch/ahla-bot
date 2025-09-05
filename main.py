@@ -121,7 +121,43 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-14"
+def purge_all_menus_once():
+    langs = (None, "ru", "en", "he")
+    scopes = (
+        None,  # default
+        types.BotCommandScopeDefault(),
+        types.BotCommandScopeAllPrivateChats(),
+        types.BotCommandScopeAllGroupChats(),
+        types.BotCommandScopeAllChatAdministrators(),
+    )
+    # глобальные/дефолтные скоупы
+    for lang in langs:
+        for sc in scopes:
+            try:
+                bot.delete_my_commands(scope=sc, language_code=lang)
+                print(f"[cmds] delete OK scope={type(sc).__name__ if sc else 'Default'} lang={lang}")
+            except Exception as e:
+                print(f"[cmds] delete FAIL scope={sc} lang={lang}: {e}")
+
+    # точечно — у админов в их приватном чате
+    for uid in ALLOWED_ADMINS:
+        for lang in langs:
+            try:
+                bot.delete_my_commands(scope=types.BotCommandScopeChat(uid), language_code=lang)
+                print(f"[cmds] delete OK chat={uid} lang={lang}")
+            except Exception as e:
+                print(f"[cmds] delete FAIL chat={uid} lang={lang}: {e}")
+
+purge_all_menus_once()
+PUBLIC_COMMANDS = [
+    types.BotCommand("start", "Начать"),
+    types.BotCommand("help", "Что умеет бот"),
+    types.BotCommand("donate", "Поддержать проект"),
+    types.BotCommand("subs", "Подписки/рассылка"),
+]
+bot.set_my_commands(PUBLIC_COMMANDS)  # без админских
+
+VERSION = "botargem-15"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
