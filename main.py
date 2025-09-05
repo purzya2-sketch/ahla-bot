@@ -137,29 +137,26 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-
-def setup_admin_commands():
-    # Устанавливаем базовые команды для всех
+def _cleanup_commands_once():
     try:
-        bot.set_my_commands(PUBLIC_COMMANDS)
-        cmd_names = [cmd.command for cmd in PUBLIC_COMMANDS]
-        print(f"✅ Публичные команды установлены: {', '.join(cmd_names)}")
+        # стереть дефолтные (если бот их когда-то ставил кодом)
+        bot.delete_my_commands()
+        print("[cmds] default cleared")
     except Exception as e:
-        print(f"❌ Ошибка установки публичных команд: {e}")
-    
-    # Админские команды для конкретных пользователей
+        print("[cmds] default clear failed:", e)
+
+    # стереть чат-специфичные команды у админов
     for admin_id in ALLOWED_ADMINS:
         try:
             scope = types.BotCommandScopeChat(admin_id)
-            all_commands = PUBLIC_COMMANDS + ADMIN_COMMANDS
-            bot.set_my_commands(all_commands, scope=scope)
-            
-            admin_cmd_names = [cmd.command for cmd in ADMIN_COMMANDS]
-            print(f"✅ Админские команды для {admin_id}: {', '.join(admin_cmd_names)}")
+            bot.delete_my_commands(scope=scope)
+            print(f"[cmds] chat scope cleared for {admin_id}")
         except Exception as e:
-            print(f"❌ Ошибка установки команд для админа {admin_id}: {e}")
-setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
-VERSION = "botargem-12"
+            print(f"[cmds] chat scope clear failed for {admin_id}:", e)
+
+_cleanup_commands_once()  # ← вызвать один раз, потом удалить из кода
+
+VERSION = "botargem-13"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -796,7 +793,7 @@ def _todays_category(now=None):
 def _pick_fact_for_category(cat, facts):
     items = [x for x in facts if x.get("cat") == cat]
     if not items:
-        for c2 in ["public", "documents", "bureaucracy", "shopping", "misc"]:
+        for c2 in ["culture", "tech", "food", "slang", "misc"]:
             items = [x for x in facts if x.get("cat") == c2]
             if items:
                 cat = c2
@@ -806,30 +803,33 @@ def _pick_fact_for_category(cat, facts):
     idx = _next_index_txn("meta/facts_daily", cat, len(items))
     return items[idx], cat, idx, len(items)
 # Python weekday(): Mon=0 ... Sun=6
+# Python weekday(): Mon=0 ... Sun=6
 WEEKDAY_CATS = {
-    6: "bureaucracy",  # Sunday
-    0: "employment",   # Monday
-    1: "health",       # Tuesday
-    2: "transport",    # Wednesday
-    3: "education",    # Thursday
-    4: "shopping",     # Friday
-    5: "slang",        # Saturday
+    6: "culture",      # Sunday - культура
+    0: "employment",   # Monday - работа (оставляем)
+    1: "health",       # Tuesday - здоровье (оставляем) 
+    2: "tech",         # Wednesday - технологии
+    3: "food",         # Thursday - еда и кулинария
+    4: "shopping",     # Friday - покупки (оставляем)
+    5: "slang",        # Saturday - язык (оставляем)
 }
 
 CAT_TITLES = {
-    "bureaucracy": "🗂️ Бюрократия",
+    "culture":     "🎭 Культура и традиции",
     "employment":  "💼 Работа и налоги",
-    "health":      "🩺 Здоровье",
-    "transport":   "🚌 Транспорт",
-    "education":   "🏫 Образование/дети",
+    "health":      "🩺 Здоровье", 
+    "tech":        "💻 Технологии и стартапы",
+    "food":        "🍽️ Еда и кулинария",
     "shopping":    "🛒 Покупки/сервисы",
     "slang":       "🗣️ Язык и сленг",
-    "public":      "🏛️ Госуслуги",
-    "documents":   "🪪 Документы",
-    "tenders":     "📋 Тендеры",
-    "misc":        "ℹ️ Факт дня",
+    "history":     "🏛️ История",
+    "nature":      "🌿 Природа и климат",
+    "military":    "🎖️ Армия и служба",
+    "sport":       "⚽ Спорт и развлечения",
+    "bureaucracy": "🗂️ Бюрократия",
+    "misc":        "ℹ️ Разное",
 }
-
+    
 def send_fact_of_the_day_now(force_cat=None):
     facts = _load_facts()
     if not facts:
@@ -846,7 +846,7 @@ def send_fact_of_the_day_now(force_cat=None):
     he = item.get("he", "")
     ru = item.get("ru", "")
     note = item.get("note") or ""
-    text = f"{title}\n\n🇮🇱 {he}\n🇷🇺 {ru}"
+    text = f"{title}\n\n🇮🇱 {he}\n📘 Перевод: {ru}"
     if note:
         text += f"\n📝 {note}"
 
@@ -1466,21 +1466,7 @@ def cmd_subs(m):
         "Нажми кнопку, чтобы переключить."
     )
     bot.send_message(m.chat.id, text, reply_markup=_subs_kb(sub_pod, sub_fact))
-@bot.message_handler(commands=['mymenu'])
-def cmd_mymenu(m):
-    try:
-        # Получаем команды для текущего пользователя
-        commands = bot.get_my_commands(scope=types.BotCommandScopeChat(m.chat.id))
-        if commands:
-            menu_list = "\n".join([f"/{cmd.command} - {cmd.description}" for cmd in commands])
-            bot.send_message(m.chat.id, f"Твои команды:\n{menu_list}")
-        else:
-            # Получаем глобальные команды
-            global_commands = bot.get_my_commands()
-            menu_list = "\n".join([f"/{cmd.command} - {cmd.description}" for cmd in global_commands])
-            bot.send_message(m.chat.id, f"Глобальные команды:\n{menu_list}")
-    except Exception as e:
-        bot.send_message(m.chat.id, f"Ошибка получения команд: {e}")
+
 @bot.message_handler(commands=['podon', 'podoff', 'facton', 'factoff'])
 def cmd_subs_short(m):
     _ensure_user(m.from_user)
