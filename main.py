@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import subprocess, tempfile
 from telebot import types
+BASE_DIR = os.path.dirname(__file__)
+
 # ==== детектор иврита/русского ====
 HEB_RE = re.compile(r'[\u0590-\u05FF]')
 CYR_RE = re.compile(r'[А-Яа-яЁё]')
@@ -149,6 +151,9 @@ def setup_admin_commands():
 
 setup_admin_commands()  # ← ВОТ ЭТО ДОБАВИТЬ
 VERSION = "botargem-10"
+print(f"[facts] FACTS_FILE={os.getenv('FACTS_FILE','<none>')}")
+print(f"[facts] BASE_DIR={BASE_DIR}")
+print(f"[facts] CWD={os.getcwd()}")
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -732,81 +737,47 @@ def _schedule_next_8am():
 _schedule_next_8am()
 
 # ===== ФАКТ ДНЯ (20:00) =====
+# ===== ФАКТ ДНЯ (20:00) =====
 FALLBACK_FACTS = [
     {"he": "המילה שלום משמשת כברכה וגם כפרידה.", "ru": "«Шалом» — и приветствие, и прощание.", "note": "Также означает «мир»."},
 ]
 
-def _load_facts_file():
-    path = os.getenv("FACTS_FILE", "facts.json")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            arr = json.load(f)
-        if isinstance(arr, list) and arr:
-            return arr
-    except Exception as e:
-        print(f"[facts] fallback: {e}")
-    return FALLBACK_FACTS
-
-def build_fact_message(item):
-    msg = f"📜 *Факт дня*\n\n🗣 {item.get('he', '')}\n📘 Перевод: {item.get('ru', '')}"
-    if item.get("note"):
-        msg += f"\n💡 {item['note']}"
-    return msg
-
-def _get_last_fact_date(user_id):
-    doc = db.collection("users").document(str(user_id)).get()
-    d = doc.to_dict() or {}
-    return d.get("last_fact")
-
-def _set_last_fact_date(user_id, date_iso):
-    db.collection("users").document(str(user_id)).set({"last_fact": date_iso}, merge=True)
-
-# Порядок путей, откуда пробуем читать факты
-FACTS_PATHS = [os.getenv("FACTS_FILE"), "facts.categorized.json", "facts.json"]
-
-# Карта "день недели -> категория"
-# Python weekday(): Monday=0 ... Sunday=6
-# Хотим: Вс -> бюрократия, Пн -> работа, и т.д.
-WEEKDAY_CATS = {
-    6: "bureaucracy",  # Sunday (в Python это 6)
-    0: "employment",   # Monday
-    1: "health",       # Tuesday
-    2: "transport",    # Wednesday
-    3: "education",    # Thursday
-    4: "shopping",     # Friday
-    5: "slang",        # Saturday
-}
-
-CAT_TITLES = {
-    "bureaucracy": "🗂️ Бюрократия",
-    "employment":  "💼 Работа и налоги",
-    "health":      "🩺 Здоровье",
-    "transport":   "🚌 Транспорт",
-    "education":   "🏫 Образование/дети",
-    "shopping":    "🛒 Покупки/сервисы",
-    "slang":       "🗣️ Язык и сленг",
-    "public":      "🏛️ Госуслуги",
-    "documents":   "🪪 Документы",
-    "tenders":     "📋 Тендеры",
-    "misc":        "ℹ️ Факт дня",
-}
+# Кандидаты путей: переменная окружения + файлы рядом со скриптом
+def _facts_candidate_paths():
+    env_raw = os.getenv("FACTS_FILE", "").strip()
+    paths = []
+    if env_raw:
+        # если путь относительный — делаем его относительным к папке файла
+        paths.append(env_raw if os.path.isabs(env_raw) else os.path.join(BASE_DIR, env_raw))
+    paths.append(os.path.join(BASE_DIR, "facts.categorized.json"))
+    paths.append(os.path.join(BASE_DIR, "facts.json"))
+    return paths
 
 def _load_facts():
-    for p in FACTS_PATHS:
-        if p and os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return json.load(f)
-    return []
+    tried = []
+    for p in _facts_candidate_paths():
+        tried.append(p)
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    print(f"[facts] loaded {len(data)} from {p}")
+                    return data
+                else:
+                    print(f"[facts] file is empty or not a list: {p}")
+            except Exception as e:
+                print(f"[facts] parse error in {p}: {e}")
+    print("[facts] using FALLBACK. Tried:", " | ".join(tried))
+    return FALLBACK_FACTS
 
 def _todays_category(now=None):
-    tz = pytz.timezone("Asia/Jerusalem")
-    now = now or datetime.now(tz)
+    tz_local = pytz.timezone("Asia/Jerusalem")
+    now = now or datetime.now(tz_local)
     return WEEKDAY_CATS.get(now.weekday(), "misc")
 
 def _pick_fact_for_category(cat, facts):
-    # 1) пробуем строго нужную категорию
     items = [x for x in facts if x.get("cat") == cat]
-    # 2) мягкие фолбэки, если в выбранный день вдруг пусто
     if not items:
         for c2 in ["public", "documents", "bureaucracy", "shopping", "misc"]:
             items = [x for x in facts if x.get("cat") == c2]
@@ -815,19 +786,15 @@ def _pick_fact_for_category(cat, facts):
                 break
     if not items:
         return None, cat, 0, 0
-
-    # крутим свой индекс по каждой категории отдельно
     idx = _next_index_txn("meta/facts_daily", cat, len(items))
     return items[idx], cat, idx, len(items)
 
-# === /ФАКТ ДНЯ: НАСТРОЙКИ И ХЕЛПЕРЫ ===
 def send_fact_of_the_day_now(force_cat=None):
     facts = _load_facts()
     if not facts:
         print("Нет facts.json — пропускаю рассылку")
         return
 
-    # категория по дню недели или принудительно из аргумента
     cat = (force_cat or "").strip().lower() or _todays_category()
     item, used_cat, idx, total = _pick_fact_for_category(cat, facts)
     if not item:
@@ -838,15 +805,11 @@ def send_fact_of_the_day_now(force_cat=None):
     he = item.get("he", "")
     ru = item.get("ru", "")
     note = item.get("note") or ""
-
     text = f"{title}\n\n🇮🇱 {he}\n🇷🇺 {ru}"
     if note:
         text += f"\n📝 {note}"
 
-    # сегодняшняя дата — чтобы не слать дважды
     today = datetime.now(tz).date().isoformat()
-
-    # все, кто подписан на «факт дня»
     try:
         recipients = [int(doc.id) for doc in db.collection("users").where("sub_fact", "==", True).stream()]
     except Exception as e:
@@ -864,24 +827,8 @@ def send_fact_of_the_day_now(force_cat=None):
         except Exception as e:
             print(f"[fact] send failed for {user_id}: {e}")
 
-    print(f"[fact] sent={sent} cat={used_cat} idx={idx}/{total-1}")
+    print(f"[fact] sent={sent} cat={used_cat} idx={idx}/{max(total-1,0)}")
 
-def _schedule_next_20():
-    now = datetime.now(tz)
-    next20 = now.replace(hour=20, minute=0, second=0, microsecond=0)
-    if now >= next20:
-        next20 += timedelta(days=1)
-    delay = (next20 - now).total_seconds()
-    
-    def _run():
-        try:
-            send_fact_of_the_day_now()
-        finally:
-            _schedule_next_20()
-    
-    threading.Timer(delay, _run).start()
-
-_schedule_next_20()
 
 # ===== ВИКТОРИНА =====
 QUIZ_COLL = "quiz"
