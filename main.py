@@ -121,7 +121,7 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-16"
+VERSION = "botargem-17"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -1193,6 +1193,7 @@ def cmd_menu(m):
         InlineKeyboardButton("👤 Профиль", callback_data="menu:profile"),
         InlineKeyboardButton("💎 Premium", callback_data="menu:premium"),
     )
+    # Новая строка: Донаты и Правила
     kb.row(
         InlineKeyboardButton("💖 Донаты", callback_data="menu:donate"),
         InlineKeyboardButton("📜 Правила", callback_data="menu:rules"),
@@ -1201,7 +1202,8 @@ def cmd_menu(m):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("menu:"))
 def cb_menu(c):
-    kind = c.data.split(":",1)[1]
+    kind = c.data.split(":", 1)[1]
+
     if kind == "tr":
         try:
             bot.edit_message_text(
@@ -1211,12 +1213,14 @@ def cb_menu(c):
                 c.message.chat.id, c.message.message_id, parse_mode="Markdown"
             )
         except Exception:
-            bot.send_message(c.message.chat.id,
+            bot.send_message(
+                c.message.chat.id,
                 "📘 *Переводы*\n"
                 "• Пришлите *текст или аудио на иврите* — я переведу на русский.\n"
                 "• Под переводом будут кнопки: «🧠 Объяснить», «🔄 Новый перевод».",
                 parse_mode="Markdown"
             )
+
     elif kind == "games":
         try:
             bot.edit_message_text(
@@ -1226,28 +1230,46 @@ def cb_menu(c):
                 c.message.chat.id, c.message.message_id, parse_mode="Markdown"
             )
         except Exception:
-            bot.send_message(c.message.chat.id,
+            bot.send_message(
+                c.message.chat.id,
                 "🎮 *Игры*\n"
                 "• /quiz — мини-викторина\n"
                 "• /quizstats — мой счёт",
                 parse_mode="Markdown"
             )
+
     elif kind == "pod":
-        bot.answer_callback_query(c.id)
-        bot.send_message(c.message.chat.id, "☀️ Фраза дня приходит *в 08:00*. Управление подпиской: /subs", parse_mode="Markdown")
+        bot.send_message(
+            c.message.chat.id,
+            "☀️ Фраза дня приходит *в 08:00*. Управление подпиской: /subs",
+            parse_mode="Markdown"
+        )
+
     elif kind == "fact":
-        bot.answer_callback_query(c.id)
-        bot.send_message(c.message.chat.id, "📜 Факт дня приходит *в 20:00*. Управление подпиской: /subs", parse_mode="Markdown")
+        bot.send_message(
+            c.message.chat.id,
+            "📜 Факт дня приходит *в 20:00*. Управление подпиской: /subs",
+            parse_mode="Markdown"
+        )
+
     elif kind == "profile":
-        # Переиспользуем твою функцию профиль:
-        cmd_profile(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
+        # Переиспользуем существующую команду
+        cmd_profile(c.message)
+
     elif kind == "premium":
-        cmd_premium(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
+        cmd_premium(c.message)
+
     elif kind == "donate":
-        cmd_donate(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
+        # Новая кнопка: вызывает ваш текущий /donate
+        cmd_donate(c.message)
+
     elif kind == "rules":
-       send_rules(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
-bot.answer_callback_query(c.id) 
+        # Новая кнопка: вызывает ваш текущий /rules
+        send_rules(c.message)
+
+    # Один раз подтверждаем callback, чтобы убрать «часики»
+    bot.answer_callback_query(c.id)
+
 
 @bot.message_handler(commands=['quiz'])
 def cmd_quiz(m):
@@ -1703,6 +1725,10 @@ def cb_quiz(c):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+        # Пусть меню целиком обрабатывает cb_menu
+    if call.data.startswith("menu:"):
+        return
+
     if not check_access(call.from_user.id):
         return bot.answer_callback_query(call.id, "Нет доступа")
     
