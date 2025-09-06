@@ -121,7 +121,7 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-15"
+VERSION = "botargem-16"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -181,7 +181,7 @@ def _send_explanation_guard(chat_id: int, body: str, offline: bool = False):
     if contains_hebrew(body) and not contains_cyrillic(body):
         bot.send_message(
             chat_id,
-            "🛠 Произошёл сбой: объяснение вышло на иврите.\n"
+            "🛠 Произошёл сбой:\n"
             "Попробуйте ещё раз нажать «🧠 Объяснить»."
         )
         return
@@ -1122,7 +1122,7 @@ def send_rules(m):
         "⚠️ Возможны ошибки в переводе\n"
         "⚠️ Ответственность на пользователе\n\n"
         "6. Поддержка\n"
-        "Вопросы: t.me/BotargemBot"
+        "Вопросы: sofyakoval82@gmail.com"
     )
     bot.send_message(m.chat.id, rules_text, parse_mode="Markdown")
 
@@ -1133,17 +1133,13 @@ def send_copyrights(m):
         "© 2025 Botargem. Все права защищены.\n"
         "© 2025 ‏Botargem. כל הזכויות שמורות.\n\n"
         "RU:\n"
-        "• Дизайн, тексты интерфейса, база фраз и логотип 🦉 — собственность автора.\n"
+        "• Дизайн,логотип и название 🦉 — собственность автора.\n"
         "• Нельзя копировать или публиковать без разрешения.\n"
-        "• Переводы можно использовать лично, но нельзя продавать как свой сервис.\n"
         "• Ваши сообщения/аудио остаются вашими; отправляя их, вы разрешаете обработку для перевода/объяснений.\n"
-        "• Медиа в промо — с разрешением или по открытой лицензии.\n"
         "HE:\n"
-        "• העיצוב, הטקסטים, מאגר הביטויים והלוגו 🦉 הם קניינו של היוצר.\n"
+        "• העיצוב,השם והלוגו 🦉 הם קניינו של היוצר.\n"
         "• אין להעתיק או לפרסם ללא אישור.\n"
-        "• מותר שימוש אישי בתרגומים, אסור למכור כשירות משלכם.\n"
         "• התוכן שאתם שולחים (טקסט/אודיו) נשאר שלכם; בשליחתו אתם מאשרים שימוש לצורך תרגום/הסבר.\n"
-        "• מדיה בפרומו — ברישיון מתאים או חופשי.\n"
     )
     bot.send_message(m.chat.id, text)
 
@@ -1197,6 +1193,10 @@ def cmd_menu(m):
         InlineKeyboardButton("👤 Профиль", callback_data="menu:profile"),
         InlineKeyboardButton("💎 Premium", callback_data="menu:premium"),
     )
+    kb.row(
+        InlineKeyboardButton("💖 Донаты", callback_data="menu:donate"),
+        InlineKeyboardButton("📜 Правила", callback_data="menu:rules"),
+    )
     bot.send_message(m.chat.id, "Главное меню — выберите раздел 👇", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("menu:"))
@@ -1243,7 +1243,11 @@ def cb_menu(c):
         cmd_profile(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
     elif kind == "premium":
         cmd_premium(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
-    bot.answer_callback_query(c.id)
+    elif kind == "donate":
+        cmd_donate(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
+    elif kind == "rules":
+       send_rules(type("obj",(object,),{"chat":c.message.chat, "from_user":c.from_user}))
+bot.answer_callback_query(c.id) 
 
 @bot.message_handler(commands=['quiz'])
 def cmd_quiz(m):
@@ -1299,7 +1303,20 @@ def cmd_fact(m):
 
     send_fact_of_the_day_now(force_cat=cat)
     bot.send_message(m.chat.id, "✅ Факт дня отправлен" + (f" (категория: {cat})" if cat else ""))
-
+def _donate_kb() -> InlineKeyboardMarkup:
+   kb = InlineKeyboardMarkup()
+  # Ссылки (PayBox и др.) из DONATE_LINKS
+   for title, url in DONATE_LINKS:
+       kb.add(InlineKeyboardButton(text=title, url=url))
+   # Показать QR Bit по клику, если файл есть
+   try:
+       if os.path.exists(BIT_QR_IMAGE):
+          kb.add(InlineKeyboardButton("📷 Показать QR Bit", callback_data="don:bitqr"))
+   except Exception:
+       pass
+  # Сразу кнопка "Отправить чек" — используем существующую логику
+   kb.add(InlineKeyboardButton("📩 Отправить чек PayBox", callback_data="rcpt:paybox"))
+   return kb
 @bot.message_handler(commands=['donate'])
 def cmd_donate(m):
     if not check_access(m.from_user.id):
@@ -1316,17 +1333,16 @@ def cmd_donate(m):
                     "Это добровольный донат и *не влияет* на лимиты.\n"
                     "Для безлимита есть /premium."
                 ),
-                parse_mode="Markdown"
+                parse_mode=None,
+                reply_markup=_donate_kb()
             )
     except Exception:
-        pass
-    
-    # PayBox: кнопка
-    
-    kb = InlineKeyboardMarkup()
-    for title, url in DONATE_LINKS:
-        kb.add(InlineKeyboardButton(text=title, url=url))
-    bot.send_message(m.chat.id, "Или поддержать через PayBox 👇", reply_markup=kb)
+      # если QR не нашли/не прочитался — даём текст + то же инлайн-меню
+       bot.send_message(
+           m.chat.id,
+     "☕ Донаты\nМожно поддержать через PayBox или показать QR Bit.",
+       reply_markup=_donate_kb()
+      )
 
 @bot.message_handler(commands=['history'])
 def cmd_history(m):
@@ -1706,7 +1722,21 @@ def handle_callback(call):
             parse_mode="Markdown"
         )
         return
-    
+     # Показать QR Bit из меню донатов
+    if call.data == "don:bitqr":
+       try:
+           with open(BIT_QR_IMAGE, "rb") as photo:
+              bot.send_photo(
+                  call.message.chat.id,
+                  photo,
+                  caption="Сканируй QR для Bit 💖",
+                  parse_mode=None,
+                reply_markup=_donate_kb()
+              )
+       except Exception:
+          bot.answer_callback_query(call.id, "QR недоступен")
+       return
+
     # --- Подписки: обработка кнопок ---
     if call.data.startswith("subs:"):
         try:
