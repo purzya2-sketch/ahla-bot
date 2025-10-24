@@ -597,6 +597,181 @@ AMOUNT_RE = re.compile(r"(\d+[.,]?\d*)\s*(₪|шек|nis|שח)", re.I)  # чис
 # === Состояние пользователей ===
 user_translations = {}
 user_data = {}
+# ==== ОПРОСЫ (Интерактивы для пользователей) ====
+
+# если ALLOWED_USERS уже загружается из Firebase — ничего менять не нужно
+ALLOWED_USERS = set(ALLOWED_USERS) if 'ALLOWED_USERS' in globals() else set()
+
+POLLS = {
+    "street": {  # «Иврит на улице»
+        "type": "quiz",
+        "question": 'מה זה אומר בעצם? 🤔\n"חבל על הזמן"',
+        "options": [
+            "Очень жалко времени",
+            "Это круто! 🔥",
+            "Нечего терять",
+            "Не знаю",
+        ],
+        "correct_option_id": 1,
+        "is_anonymous": False,
+        "allows_multiple_answers": False,
+        "followup": "💬 Правильно: «חבל על הזמן» — это *супер, классно, вау!*"
+                    "\nБуквально: «жаль времени», но сленгом — комплимент 😎",
+    },
+    "mood": {  # «Как твой иврит сегодня?»
+        "type": "regular",
+        "question": "מה מצב העברית שלך היום? 🇮🇱\n(Как твой иврит сегодня?)",
+        "options": [
+            "«סבבה לגמרי» — отлично!",
+            "«ככה ככה» — так себе",
+            "«עזוב אותי בעברית» — не трогай мой мозг 🤯",
+        ],
+        "is_anonymous": True,
+        "allows_multiple_answers": False,
+        "followup": "📘 Проверь фразу дня — настроение поднимется! ☀️",
+    },
+    "battle": {  # «Фраза-баттл»
+        "type": "regular",
+        "question": "איזה ביטוי אתה אוהב יותר? ❤️\n(Какое выражение тебе ближе?)",
+        "options": [
+            "אחלה חיים",
+            "אין לי כוח",
+            "סגור עניין",
+            "נשבר לי",
+        ],
+        "is_anonymous": True,
+        "allows_multiple_answers": False,
+        "followup": "🤖 Победит сильнейший! (и да, «אין לי כוח» — национальный мем)",
+    },
+}
+
+
+def send_poll_once(chat_id: int, key: str):
+    p = POLLS[key]
+    try:
+        msg = bot.send_poll(
+            chat_id=chat_id,
+            question=p["question"],
+            options=p["options"],
+            is_anonymous=p.get("is_anonymous", False),
+            type=p.get("type", "regular"),
+            allows_multiple_answers=p.get("allows_multiple_answers", False),
+            correct_option_id=p.get("correct_option_id") if p["type"] == "quiz" else None,
+        )
+        print(f"[poll] sent '{key}' to chat {chat_id}, message_id={msg.message_id}")
+        if p.get("followup"):
+            bot.send_message(chat_id, p["followup"])
+    except Exception as e:
+        print(f"[poll] error sending '{key}' to {chat_id}: {e}")
+
+
+def broadcast_poll(key: str, test_mode: bool = False):
+    """Рассылает опрос всем разрешённым пользователям."""
+    targets = [next(iter(ALLOWED_USERS))] if test_mode else list(ALLOWED_USERS)
+    for uid in targets:
+        send_poll_once(uid, key)
+    print(f"[poll] broadcast '{key}' done ({len(targets)} users).")
+
+
+# === Команды ===
+@bot.message_handler(commands=['poll_street'])
+def _poll_street_here(message):
+    send_poll_once(message.chat.id, "street")
+
+@bot.message_handler(commands=['poll_mood'])
+def _poll_mood_here(message):
+    send_poll_once(message.chat.id, "mood")
+
+@bot.message_handler(commands=['poll_battle'])
+def _poll_battle_here(message):
+    send_poll_once(message.chat.id, "battle")
+
+@bot.message_handler(commands=['pod_opros'])
+def _poll_broadcast_cmd(message):
+    try:
+        parts = message.text.strip().split()
+        key = parts[1] if len(parts) >= 2 else ""
+        if key not in POLLS:
+            bot.reply_to(message, f"Укажи ключ опроса: {list(POLLS.keys())}\nПример: /pod_opros street")
+            return
+        test_mode = (len(parts) >= 3 and parts[2].lower() == "test")
+        broadcast_poll(key, test_mode=test_mode)
+        bot.reply_to(message, f"Опрос '{key}' отправлен. test_mode={test_mode}")
+    except Exception as e:
+        bot.reply_to(message, f"Ошибка запуска рассылки: {e}")
+        # ==== НЕДЕЛЬНЫЙ АВТО-ОПРОС (воскресенье 09:00) ====
+
+# Что рассылаем по умолчанию: 'street' | 'mood' | 'battle'
+WEEKLY_POLL_KEY = os.getenv("WEEKLY_POLL_KEY", "street")
+
+# сюда сохраним дату/время следующего запуска (для /weekly_opros_info)
+_WEEKLY_NEXT_RUN_AT = None
+
+def _next_weekday_time(target_wd: int, hour: int, minute: int):
+    """
+    target_wd: 0=Пн ... 6=Вс  (Python weekday)
+    Возвращает datetime в tz для ближайшего такого дня в заданное время.
+    """
+    now = datetime.now(tz)
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    days_ahead = (target_wd - now.weekday()) % 7
+    if days_ahead == 0 and now >= candidate:
+        days_ahead = 7
+    run_at = candidate + timedelta(days=days_ahead)
+    return run_at
+
+def _schedule_weekly_poll():
+    """Планирует рассылку на следующее воскресенье 09:00 и перезапускается после отправки."""
+    global _WEEKLY_NEXT_RUN_AT
+    # В Python: Пн=0 ... Вс=6 → хотим воскресенье
+    run_at = _next_weekday_time(6, 9, 0)
+    _WEEKLY_NEXT_RUN_AT = run_at
+    delay = (run_at - datetime.now(tz)).total_seconds()
+    print(f"[weekly_poll] next run at {run_at.isoformat()} (Asia/Jerusalem), key={WEEKLY_POLL_KEY}")
+
+    def _runner():
+        try:
+            print(f"[weekly_poll] sending '{WEEKLY_POLL_KEY}' to {len(ALLOWED_USERS)} users")
+            broadcast_poll(WEEKLY_POLL_KEY, test_mode=False)
+        except Exception as e:
+            print(f"[weekly_poll] error: {e}")
+        finally:
+            _schedule_weekly_poll()  # планируем следующий раз
+
+    threading.Timer(delay, _runner).start()
+
+# стартуем планировщик при загрузке
+_schedule_weekly_poll()
+
+# --- Служебные команды админа ---
+
+@bot.message_handler(commands=['weekly_opros_info'])
+def _weekly_info(m):
+    if not is_owner(m.from_user.id):
+        return bot.send_message(m.chat.id, "⛔ Нет прав")
+    when = _WEEKLY_NEXT_RUN_AT.isoformat() if _WEEKLY_NEXT_RUN_AT else "—"
+    bot.send_message(m.chat.id, f"🗓 Weekly-opros: key={WEEKLY_POLL_KEY}\nСледующий запуск: {when} (Asia/Jerusalem)")
+
+@bot.message_handler(commands=['weekly_opros_set'])
+def _weekly_set(m):
+    """/weekly_opros_set <street|mood|battle> — сменить тип опроса со следующего раза"""
+    if not is_owner(m.from_user.id):
+        return bot.send_message(m.chat.id, "⛔ Нет прав")
+    parts = m.text.strip().split()
+    if len(parts) < 2 or parts[1] not in POLLS:
+        return bot.send_message(m.chat.id, f"Укажи ключ: {list(POLLS.keys())}\nПример: /weekly_opros_set street")
+    global WEEKLY_POLL_KEY
+    WEEKLY_POLL_KEY = parts[1]
+    bot.send_message(m.chat.id, f"✅ Weekly-opros теперь: {WEEKLY_POLL_KEY}\nПодтверди: /weekly_opros_info")
+
+@bot.message_handler(commands=['weekly_opros_now'])
+def _weekly_now(m):
+    """Мгновенно отправить выбранный weekly-опрос всем (аккуратно!)"""
+    if not is_owner(m.from_user.id):
+        return bot.send_message(m.chat.id, "⛔ Нет прав")
+    broadcast_poll(WEEKLY_POLL_KEY, test_mode=False)
+    bot.send_message(m.chat.id, f"📣 Отправлен '{WEEKLY_POLL_KEY}' всем.")
+
 
 # ===== ФРАЗА ДНЯ =====
 FALLBACK_PHRASES = [
