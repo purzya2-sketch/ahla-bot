@@ -121,7 +121,7 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-1"
+VERSION = "botargem-2"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -631,6 +631,31 @@ def build_pod_message(item):
         f"📘 Перевод: _{item['ru']}_\n"
         f"💬 Пояснение: {item.get('note', '—')}"
     )
+# === Диагностика источника фраз ===
+@bot.message_handler(commands=['phrase_source'])
+def cmd_phrase_source(message):
+    src = "fallback"
+    try:
+        path = os.getenv("PHRASES_FILE", "phrases.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and len(data) == len(phrase_db):
+                src = f"файл {path}"
+            else:
+                src = f"файл {path}, но список отличается ({len(data)} vs {len(phrase_db)})"
+        else:
+            src = f"файл {path} не найден"
+    except Exception as e:
+        src = f"ошибка при чтении файла: {e}"
+
+    sample = phrase_db[0] if phrase_db else {"he": "—", "ru": "—"}
+    msg = (
+        f"📊 Источник фраз дня: *{src}*\n"
+        f"Количество: {len(phrase_db)}\n"
+        f"Пример: {sample.get('he','?')} → {sample.get('ru','?')}"
+    )
+    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
 
 # === РОТАЦИИ (циклический выбор без повторов) ===
 META_COL = "meta"
