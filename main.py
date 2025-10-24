@@ -121,7 +121,7 @@ def create_bot_with_retry():
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-2"
+VERSION = "botargem-3"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -623,6 +623,55 @@ def load_phrase_db():
         return FALLBACK_PHRASES
 
 phrase_db = load_phrase_db()
+@bot.message_handler(commands=['phrase_today'])
+def cmd_phrase_today(m):
+    idx = _today_idx()
+    item = phrase_of_today()
+    bot.send_message(
+        m.chat.id,
+        f"📅 Сегодня индекс: {idx} из {len(phrase_db)}\n"
+        f"🗣 {item['he']} → {item['ru']}\n"
+        f"💬 {item.get('note','—')}"
+    )
+from datetime import date
+
+def _idx_for_date(d):
+    h = int(hashlib.sha1(d.isoformat().encode("utf-8")).hexdigest(), 16)
+    return h % len(phrase_db)
+
+@bot.message_handler(commands=['phrase_next7'])
+def cmd_phrase_next7(m):
+    base = datetime.now(tz).date()
+    lines = ["🗓 Фразы на 7 дней вперёд:"]
+    for i in range(7):
+        d = base + timedelta(days=i)
+        idx = _idx_for_date(d)
+        it = phrase_db[idx]
+        lines.append(f"{d.isoformat()} — [{idx}] {it['he']} → {it['ru']}")
+    bot.send_message(m.chat.id, "\n".join(lines))
+@bot.message_handler(commands=['phrase_dedup'])
+def cmd_phrase_dedup(m):
+    norm = lambda s: re.sub(r"\s+", " ", s.strip())
+    seen, dups = {}, []
+    for i, it in enumerate(phrase_db):
+        key = norm(it.get("he",""))
+        if key in seen:
+            dups.append((seen[key], i, it["he"]))
+        else:
+            seen[key] = i
+    if not dups:
+        return bot.send_message(m.chat.id, "✅ Дубликатов по полю 'he' не найдено.")
+    lines = [f"⚠️ Найдены дубликаты ({len(dups)}):"]
+    for a,b,he in dups[:40]:
+        lines.append(f"• индексы {a} и {b}: {he}")
+    if len(dups) > 40:
+        lines.append("…и ещё, сократил вывод")
+    bot.send_message(m.chat.id, "\n".join(lines))
+@bot.message_handler(commands=['phrases_reload'])
+def cmd_phrases_reload(m):
+    global phrase_db
+    phrase_db = load_phrase_db()
+    bot.send_message(m.chat.id, f"🔄 Перезагружено. Фраз: {len(phrase_db)}")
 
 def build_pod_message(item):
     return (
