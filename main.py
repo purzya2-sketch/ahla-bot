@@ -7,6 +7,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pytz
+import hashlib
+from datetime import date
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import subprocess, tempfile
