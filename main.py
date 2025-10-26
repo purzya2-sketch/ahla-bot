@@ -5,6 +5,7 @@ import openai
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import firebase_admin
+from telebot.apihelper import ApiTelegramException
 from firebase_admin import credentials, firestore
 import pytz
 import hashlib
@@ -120,10 +121,42 @@ def create_bot_with_retry():
                 raise e
             time.sleep(5)
     raise Exception("Не удалось создать бота после всех попыток")
+# === ОПРОСЫ И ОБЪЯСНЕНИЯ ===
+
+active_polls = {}
+
+def send_quiz(chat_id, q, options, correct_idx, explain_text):
+    msg = bot.send_poll(
+        chat_id,
+        question=q,
+        options=options,
+        type="quiz",
+        correct_option_id=correct_idx,
+        is_anonymous=False
+    )
+    # запоминаем, чтобы потом знать, что ответить
+    active_polls[msg.poll.id] = {
+        "chat_id": chat_id,
+        "correct": correct_idx,
+        "explain": explain_text
+    }
+
+@bot.poll_answer_handler()
+def on_poll_answer(pa: telebot.types.PollAnswer):
+    info = active_polls.get(pa.poll_id)
+    if not info or not pa.option_ids:
+        return
+    user_id = pa.user.id
+    chosen = pa.option_ids[0]
+    if chosen == info["correct"]:
+        bot.send_message(user_id, "✅ Правильно!\n" + info["explain"])
+    else:
+        bot.send_message(user_id, "❌ Не совсем.\n" + info["explain"])
+
 
 # === Создаём бота и объявляем версию ===
 bot = create_bot_with_retry()
-VERSION = "botargem-4"
+VERSION = "botargem-5"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
@@ -161,6 +194,31 @@ print(f"[facts] FACTS_FILE={os.getenv('FACTS_FILE','<none>')}")
 print(f"[facts] BASE_DIR={BASE_DIR}")
 print(f"[facts] CWD={os.getcwd()}")
 
+import pytz
+from datetime import datetime
+from firebase_admin import firestore
+
+TZ = pytz.timezone("Asia/Jerusalem")
+
+def already_sent_today(db, chat_id: int, kind: str) -> bool:
+    """
+    kind: 'quiz' или 'phrase'
+    """
+    day = datetime.now(TZ).strftime("%Y-%m-%d")
+    doc_id = f"{chat_id}:{kind}:{day}"
+    ref = db.collection("daily_posts").document(doc_id)
+    if ref.get().exists:
+        return True
+    try:
+        ref.create({
+            "chat_id": chat_id,
+            "kind": kind,
+            "day": day,
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+        return False
+    except Exception:
+        return True
 
 # ===== USERS: автокарточка и подписки по умолчанию =====
 def _ensure_user(user):
@@ -617,8 +675,6 @@ POLLS = {
         "correct_option_id": 1,
         "is_anonymous": False,
         "allows_multiple_answers": False,
-        "followup": "💬 Правильно: «חבל על הזמן» — это *супер, классно, вау!*"
-                    "\nБуквально: «жаль времени», но сленгом — комплимент 😎",
     },
     "mood": {  # «Как твой иврит сегодня?»
         "type": "regular",
@@ -773,6 +829,34 @@ def _weekly_now(m):
         return bot.send_message(m.chat.id, "⛔ Нет прав")
     broadcast_poll(WEEKLY_POLL_KEY, test_mode=False)
     bot.send_message(m.chat.id, f"📣 Отправлен '{WEEKLY_POLL_KEY}' всем.")
+def _mark_user_blocked(user_id: int, reason: str = "blocked"):
+    try:
+        db.collection("users").document(str(user_id)).set(
+            {"blocked": True, "blocked_reason": reason, "blocked_ts": datetime.utcnow().isoformat()},
+            merge=True
+        )
+    except Exception as e:
+        print(f"[blocked] mark err for {user_id}: {e}")
+    # удаляем из текущего набора для рассылки
+    if user_id in ALLOWED_USERS:
+        ALLOWED_USERS.discard(user_id)
+
+def _send_safe(chat_id: int, text: str, **kwargs) -> bool:
+    """Пытаемся отправить. True — ушло; False — нет (и если 403 — пометим blocked)."""
+    try:
+        bot.send_message(chat_id, text, **kwargs)
+        return True
+    except ApiTelegramException as e:
+        s = str(e)
+        if "403" in s and ("bot was blocked by the user" in s or "user is deactivated" in s):
+            _mark_user_blocked(chat_id, "deactivated" if "deactivated" in s else "blocked")
+            print(f"[send_safe] 403 → убрала {chat_id} из рассылки ({s})")
+            return False
+        print(f"[send_safe] API error {chat_id}: {s}")
+        return False
+    except Exception as e:
+        print(f"[send_safe] error {chat_id}: {e}")
+        return False
 
 
 # ===== ФРАЗА ДНЯ =====
