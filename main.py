@@ -121,8 +121,17 @@ def create_bot_with_retry():
                 raise e
             time.sleep(5)
     raise Exception("Не удалось создать бота после всех попыток")
-# === ОПРОСЫ И ОБЪЯСНЕНИЯ ===
 
+
+# === Создаём бота и объявляем версию ===
+bot = create_bot_with_retry()
+VERSION = "botargem-5"
+
+# === Создаём бота и объявляем версию ===
+bot = create_bot_with_retry()
+VERSION = "botargem-5"
+
+# === ОПРОСЫ И ОБЪЯСНЕНИЯ ===
 active_polls = {}
 
 def send_quiz(chat_id, q, options, correct_idx, explain_text):
@@ -134,7 +143,6 @@ def send_quiz(chat_id, q, options, correct_idx, explain_text):
         correct_option_id=correct_idx,
         is_anonymous=False
     )
-    # запоминаем, чтобы потом знать, что ответить
     active_polls[msg.poll.id] = {
         "chat_id": chat_id,
         "correct": correct_idx,
@@ -152,11 +160,6 @@ def on_poll_answer(pa: telebot.types.PollAnswer):
         bot.send_message(user_id, "✅ Правильно!\n" + info["explain"])
     else:
         bot.send_message(user_id, "❌ Не совсем.\n" + info["explain"])
-
-
-# === Создаём бота и объявляем версию ===
-bot = create_bot_with_retry()
-VERSION = "botargem-5"
 
 # какой движок перевода использовали в последний раз для этого чата
 user_engine = {}  # chat_id -> "google" | "mymemory"
